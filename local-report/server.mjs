@@ -25,7 +25,8 @@ function project(all, params) {
   const rows = all.filter(e => (!params.get('rank') || String(e.rank) === params.get('rank')) &&
     (!params.get('source') || e.source === params.get('source')) &&
     (!params.get('q') || JSON.stringify(e).toLowerCase().includes(params.get('q').toLowerCase())))
-    .map(e => ({ ...e, quality: e.parent_event_id && !ids.has(e.parent_event_id) ? 'orphan' :
+    .map(e => ({ ...e, source_label: e.source === 'abi_harness' ? 'SAMPLE ABI - RUNTIME UNVERIFIED' :
+      e.source === 'sample_replay' ? 'SAMPLE REPLAY' : 'NCCL PROFILER', quality: e.parent_event_id && !ids.has(e.parent_event_id) ? 'orphan' :
       e.lifecycle === 'start' && !all.some(x => x.parent_event_id === e.event_id && x.lifecycle === 'stop') ? 'unclosed' :
       e.validity && Object.values(e.validity).some(x => x === 'missing' || x === 'invalid') ? 'missing' : 'observed' }));
   return { run_id: all[0]?.run_id || null, total: all.length, rows,
@@ -66,7 +67,7 @@ export function handler(req, res) {
       const selected = url.searchParams.get('section') === 'chunks' ? result.chunks : result.rows;
       if (url.searchParams.get('format') === 'csv') {
         const fields = ['event_id', 'source', 'source_label', 'source_event_type', 'rank', 'channel_id', 'peer', 'source_clock_domain', 'source_timestamp_ns', 'quality'];
-        return send(res, 200, [fields.join(','), ...selected.map(row => fields.map(k => '"' + String(k === 'source_label' ? row.source === 'sample_replay' ? 'SAMPLE REPLAY' : row.source : row[k] ?? '').replaceAll('"', '""') + '"').join(','))].join('\r\n'), 'text/csv; charset=utf-8');
+        return send(res, 200, [fields.join(','), ...selected.map(row => fields.map(k => '"' + String(row[k] ?? '').replaceAll('"', '""') + '"').join(','))].join('\r\n'), 'text/csv; charset=utf-8');
       }
       return send(res, 200, result);
     }
@@ -74,4 +75,6 @@ export function handler(req, res) {
   })().catch(e => send(res, 500, { error: e.message }));
 }
 if (process.argv[1] && resolve(process.argv[1]) === resolve(import.meta.filename))
-  createServer(handler).listen(port, '127.0.0.1', () => console.log('Local report: http://localhost:' + port));
+  createServer(handler).listen(port, '127.0.0.1', function () {
+    console.log('Local report: http://127.0.0.1:' + this.address().port);
+  });

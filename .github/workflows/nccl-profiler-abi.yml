@@ -1,0 +1,25 @@
+name: NCCL profiler ABI harness
+
+on:
+  push:
+    paths:
+      - "local-report/**"
+      - "nccl-tests-master/src/nccl_profiler.h"
+      - "nccl-tests-master/src/profiler_v*.h"
+      - ".github/workflows/nccl-profiler-abi.yml"
+  pull_request:
+    paths:
+      - "local-report/**"
+      - "nccl-tests-master/src/nccl_profiler.h"
+      - "nccl-tests-master/src/profiler_v*.h"
+      - ".github/workflows/nccl-profiler-abi.yml"
+
+jobs:
+  linux-abi-harness:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: node local-report/abi-linux-smoke.mjs

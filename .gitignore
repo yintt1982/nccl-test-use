@@ -1,5 +1,6 @@
 # Local report data and generated output
 local-report/data/
+local-report/build/
 *.log
 *.tmp
 .tmp-*
