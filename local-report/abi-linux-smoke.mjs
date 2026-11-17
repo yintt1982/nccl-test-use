@@ -11,7 +11,6 @@ const { handler } = await import('./server.mjs');
 const server = createServer(handler);
 await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
 async function run(command, args, environment = process.env) {
-  console.log('[ABI-CI] running ' + command + ' ' + args[0]);
   const child = spawn(command, args, { stdio: ['ignore', 'pipe', 'pipe'], env: environment });
   let output = '';
   child.stdout.on('data', chunk => { output += chunk; process.stdout.write(chunk); });
@@ -30,9 +29,7 @@ try {
   await run(process.env.CXX || 'g++', ['-std=c++17', '-fPIC', '-shared', '-Ilocal-report/abi', '-I' + sourceRoot, 'local-report/abi/linux/profiler_plugin.cpp', '-o', plugin]);
   await run(process.env.CXX || 'g++', ['-std=c++17', '-Ilocal-report/abi', '-I' + sourceRoot, 'local-report/abi/linux/profiler_host.cpp', '-ldl', '-o', host]);
   const output = join(temp, 'events.jsonl');
-  console.log('[ABI-CI] loading plugin and exercising callbacks');
   await run(host, ['--plugin', plugin, '--output', output], { ...process.env, NCCL_PROFILER_JSONL: output });
-  console.log('[ABI-CI] importing JSONL into report API');
   const events = (await readFile(output, 'utf8')).trim().split(/\r?\n/).map(JSON.parse);
   const base = 'http://127.0.0.1:' + server.address().port;
   const imported = await fetch(base + '/api/runs/abi-harness/events', { method: 'POST', body: JSON.stringify(events) });
