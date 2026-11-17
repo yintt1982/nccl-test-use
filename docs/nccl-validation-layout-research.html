@@ -1,0 +1,114 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="description" content="nccl-tests 正确性校验与 Collective 数据布局">
+<title>nccl-tests 正确性校验与 Collective 数据布局 | nccl-tests ????</title>
+<style>
+:root{color-scheme:light;--ink:#17212b;--muted:#5b6775;--line:#d8e0e8;--paper:#fff;--canvas:#f3f6f9;--accent:#1769aa;--code:#f1f4f7}
+*{box-sizing:border-box}body{margin:0;background:var(--canvas);color:var(--ink);font:16px/1.72 system-ui,-apple-system,"Segoe UI",sans-serif}
+header{background:#102a43;color:#fff;padding:18px max(24px,calc((100vw - 1120px)/2));display:flex;justify-content:space-between;align-items:center;gap:16px}
+header strong{font-size:15px;letter-spacing:.02em}header a{color:#cfe8ff;text-decoration:none;font-size:14px}
+main{max-width:1120px;margin:32px auto;padding:44px 56px;background:var(--paper);border:1px solid var(--line);border-radius:12px;box-shadow:0 8px 30px #19324b0c}
+article{max-width:900px;margin:auto}h1,h2,h3,h4{line-height:1.3;color:#102a43}h1{font-size:2.15rem;margin:0 0 1.4rem;padding-bottom:1rem;border-bottom:1px solid var(--line)}h2{font-size:1.55rem;margin-top:2.2rem;padding-bottom:.4rem;border-bottom:1px solid var(--line)}h3{font-size:1.2rem;margin-top:1.8rem}a{color:var(--accent);text-underline-offset:3px}p,ul,ol{margin:.85rem 0}li{padding-left:.2rem;margin:.25rem 0}blockquote{margin:1.2rem 0;padding:.2rem 1rem;border-left:4px solid #77a9d3;color:var(--muted);background:#f6f9fc}code{font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-size:.9em;background:var(--code);padding:.12em .35em;border-radius:4px}pre{overflow:auto;padding:18px;background:#101820;color:#e8eef4;border-radius:8px;line-height:1.55}pre code{background:transparent;padding:0;color:inherit}table{border-collapse:collapse;width:100%;display:block;overflow-x:auto;margin:1.2rem 0;font-size:.94rem}th,td{border:1px solid var(--line);padding:9px 12px;text-align:left;vertical-align:top}th{background:#edf3f8;color:#15334d}hr{border:0;border-top:1px solid var(--line);margin:2rem 0}img{max-width:100%;height:auto}footer{max-width:1120px;margin:0 auto 30px;padding:0 16px;text-align:center;color:var(--muted);font-size:13px}
+@media(max-width:720px){main{margin:12px;padding:26px 20px;border-radius:8px}header{padding:14px 20px}h1{font-size:1.7rem}body{font-size:15px}}
+</style>
+</head>
+<body>
+<header><strong>nccl-tests ????</strong><a href="nccl-validation-layout-research.md">?? Markdown ???</a></header>
+<main><article>
+<h1>nccl-tests 正确性校验与 Collective 数据布局</h1>
+<p>研究日期：2026-10-26。源码基线：<code>E:/dpi/nccl-tests-master</code>，与已核验的上游 master 快照一致。静态源码阅读，未运行 GPU 测试。本文承接 <a href="nccl-allreduce-walkthrough.html">AllReduce 执行走读</a>。</p>
+<h2>1. 校验不是“拿一组固定随机数比对”</h2>
+<p><code>verifiable/</code> 为每个元素按 datatype、reduction op、rank 数、rank 编号、seed 和元素下标生成输入；对应生成逻辑可复现，因此期望结果可以独立构造。一般 reduction 的 <code>genOutput()</code> 按 rank 顺序把每个 rank 的 <code>genInput()</code> 经过规约函数折叠起来。<a href="../nccl-tests-master/verifiable/verifiable.cu#L752">输入/输出通用生成</a></p>
+<p>生成 kernel <code>prepareInput2</code> 在每个 GPU 上并行写输入；<code>ncclVerifiablePrepareInput</code> 按操作选择 Sum/Min/Max/Product/Avg 等生成器。<code>prepareExpected2</code> 用 <code>genOutput()</code> 并行生成期望结果，API <code>ncclVerifiablePrepareExpected</code> 做操作分发。<a href="../nccl-tests-master/verifiable/verifiable.cu#L1005">输入生成 kernel</a> <a href="../nccl-tests-master/verifiable/verifiable.cu#L1060">输入 API</a> <a href="../nccl-tests-master/verifiable/verifiable.cu#L1089">expected 生成</a></p>
+<p>例如 AllReduce Sum：每个 rank 对同一元素索引生成 rank 专属输入，expected 对所有 rank 的同位置输入做 Sum。AllReduce 适配器把输入初始化与 expected 构造放在每张 GPU 上，然后计时结束后重新初始化并另发起一次 collective 做比对。<a href="../nccl-tests-master/src/all_reduce.cu#L42">AllReduce 初始化</a> <a href="../nccl-tests-master/src/common.cu#L831">校验调用顺序</a></p>
+<h2>2. 如何判定一个元素错误</h2>
+<p><code>CheckData()</code> 对每个本机 GPU 取得输出缓冲区及 expected，调用 <code>ncclVerifiableVerify()</code>；返回的错误元素数先按本机 GPU 累加，再经框架的进程/线程汇总，形成 <code>#wrong</code> / JSON <code>nwrong</code>。<a href="../nccl-tests-master/src/common.cu#L449">CheckData</a> <a href="../nccl-tests-master/src/common.cu#L876">错误归并与报告</a></p>
+<p>当 expected 已预先生成时，验证 kernel 对结果和 expected 做逐元素比较并累计超过 tolerance 的元素数量。浮点 AllReduce Average 设 tolerance=2 ULP，以容纳平均值预乘/浮点运算带来的尾数差异；代码注释说明其原因。不能笼统宣称所有浮点规约都是零容差，也不能把 2 ULP 推广到所有操作。<a href="../nccl-tests-master/verifiable/verifiable.cu#L1189">prepared comparison</a> <a href="../nccl-tests-master/verifiable/verifiable.cu#L1306">容差选择</a></p>
+<p>数据生成不是为了模拟业务分布，而是为多种 datatype、reduction op 和 rank 数构造可预测且有针对性的结果。整数 reduction 的通用输入由 index/rank/seed 的 hash 构造；浮点 Sum 有专门输入/输出构造逻辑，确保结果可预测。<a href="../nccl-tests-master/verifiable/verifiable.cu#L755">整数输入</a> <a href="../nccl-tests-master/verifiable/verifiable.cu#L836">浮点 Sum</a></p>
+<h2>3. 对 AllReduce 校验链的具体读法</h2>
+<p>AllReduce 的 <code>AllReduceInitData()</code>：</p>
+<ol>
+<li>按当前 datatype 把 send/expected 字节数换成元素数。</li>
+<li>得到全局 communicator rank 数 <code>nProcs*nThreads*nGpus</code>。</li>
+<li>对每张 GPU，计算其 rank 编号并清零 recv buffer。</li>
+<li>根据 out-of-place/in-place 决定在哪里生成输入。</li>
+<li>调 <code>InitData()</code> 生成该 rank 输入，再调 <code>InitDataReduce()</code> 为该 rank 生成规约 expected。</li>
+<li>同步设备，保证准备完成。</li>
+</ol>
+<p>计时完成后，<code>BenchTime()</code> 再做一轮初始化与 collective，然后 <code>CheckData()</code> 比较每张 GPU 输出。检查迭代不计入 benchmark time；<code>-c</code> 是检查循环数，不是计时迭代的抽样比例。<a href="../nccl-tests-master/src/all_reduce.cu#L42">AllReduce adapter</a> <a href="../nccl-tests-master/src/common.cu#L831">检查阶段</a></p>
+<h2>4. 三种 Collective 的数据布局</h2>
+<p>用 <code>N</code> 表示 communicator rank 数，用 <code>E</code> 表示初步按用户消息大小和 datatype 得到的元素数。AllGather 和 ReduceScatter 适配器计算 <code>base=(E/N) &amp; ~(16/eltSize - 1)</code>；这是按 rank 切分后再向下对齐的元素数。故在某些组合下，实际有效元素数会小于未对齐的理想切分，不能只用 <code>E/N</code> 假设。<a href="../nccl-tests-master/src/all_gather.cu#L10">AllGather 布局</a> <a href="../nccl-tests-master/src/reduce_scatter.cu#L10">ReduceScatter 布局</a></p>
+<table>
+<thead>
+<tr>
+<th>操作</th>
+<th style="text-align:right">每 rank 发送</th>
+<th style="text-align:right">每 rank 接收</th>
+<th>本地语义</th>
+<th style="text-align:right"><code>algbw</code> 的有效字节分子</th>
+<th style="text-align:right"><code>busbw</code> 因子</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>AllReduce</td>
+<td style="text-align:right">E</td>
+<td style="text-align:right">E</td>
+<td>所有 rank 对应元素规约，结果复制到所有 rank</td>
+<td style="text-align:right">E × typeSize</td>
+<td style="text-align:right">2(N−1)/N</td>
+</tr>
+<tr>
+<td>AllGather</td>
+<td style="text-align:right">base</td>
+<td style="text-align:right">base×N</td>
+<td>收集各 rank 的等长输入块，按 rank 拼到每个接收缓冲区</td>
+<td style="text-align:right">base×N×typeSize</td>
+<td style="text-align:right">(N−1)/N</td>
+</tr>
+<tr>
+<td>ReduceScatter</td>
+<td style="text-align:right">base×N</td>
+<td style="text-align:right">base</td>
+<td>对输入向量分块规约，每个 rank 只收一个结果块</td>
+<td style="text-align:right">base×N×typeSize</td>
+<td style="text-align:right">(N−1)/N</td>
+</tr>
+<tr>
+<td>Broadcast</td>
+<td style="text-align:right">E</td>
+<td style="text-align:right">E</td>
+<td>root 输入传播到所有 rank</td>
+<td style="text-align:right">E × typeSize</td>
+<td style="text-align:right">1</td>
+</tr>
+</tbody>
+</table>
+<p>公式与代码：<a href="../nccl-tests-master/src/all_gather.cu#L38">AllGather 带宽</a>、<a href="../nccl-tests-master/src/reduce_scatter.cu#L37">ReduceScatter 带宽</a>、<a href="../nccl-tests-master/src/broadcast.cu#L34">Broadcast 带宽</a>、<a href="../nccl-tests-master/doc/PERFORMANCE.md#L65">通用理论说明</a>。<code>algbw</code> 的公式分子和报告的 <code>size</code> 字段不能混为一谈：通用报告 <code>size</code> 取 <code>max(sendBytes, expectedBytes)</code>，<code>count</code> 来自适配器的 <code>paramCount</code>。<a href="../nccl-tests-master/src/common.cu#L932">行前缀生成</a></p>
+<h3>AllGather</h3>
+<p>每 rank 提供 base 个元素，接收缓冲区容量为 base×N。in-place 时，该 rank 的输入先放在接收缓冲区按 rank 对应的分块位置；expected 则按 rank 顺序把每个 rank 的独立输入拼接起来。NCCL API count 是每个 rank 提供的 count，而不是总接收元素数。<a href="../nccl-tests-master/src/all_gather.cu#L19">初始化与偏移</a> <a href="../nccl-tests-master/src/all_gather.cu#L102">调用参数</a></p>
+<h3>ReduceScatter</h3>
+<p>每 rank 提供 base×N 个输入元素，接收 base 个规约后元素。expected 由总 expected buffer 初始化后，按本 rank 所负责的块偏移生成对应规约结果。in-place 输出偏移也按 rank 块位置设置。<a href="../nccl-tests-master/src/reduce_scatter.cu#L19">初始化与块偏移</a> <a href="../nccl-tests-master/src/reduce_scatter.cu#L45">调用参数</a></p>
+<h3>Broadcast</h3>
+<p>每 rank 的发送/接收数量都是 E，但只有 root 的输入是待广播数据；其他 rank 输入不构成结果来源。所有 rank 的 expected 都从相同 seed 生成同一预期值。busbw 换算因子固定为 1。<a href="../nccl-tests-master/src/broadcast.cu#L18">初始化</a> <a href="../nccl-tests-master/src/broadcast.cu#L34">公式与调用</a></p>
+<h2>5. 看报告时要区分的量</h2>
+<ul>
+<li><strong>用户请求的 min/max bytes</strong>：命令行扫描范围。</li>
+<li><strong>适配器的参数 count</strong>：传给 NCCL API 的元素数，或定义当前测试点的基础元素数。</li>
+<li><strong>sendBytes/expectedBytes</strong>：每个 rank 本地缓冲区需求。</li>
+<li><strong>报告 size</strong>：公共报告取 max(sendBytes, expectedBytes) 后的字节数。</li>
+<li><strong>algbw 分子</strong>：各操作适配器定义的有效逻辑数据量；AllGather/ReduceScatter 会用 N 倍 count。</li>
+<li><strong>busbw</strong>：algbw 再乘操作相关理论换算因子。</li>
+<li><strong>nwrong</strong>：计时后独立校验中未通过容差比较的元素计数。</li>
+</ul>
+<p>对 AllGather/ReduceScatter，size、count 和带宽分子明显不一样。界面如果只存一个 <code>message_size</code> 数字，就会丢掉 API count 与用户数据规模的区别。</p>
+<h2>6. 当前掌握与未覆盖</h2>
+<p>目前已通过源码跟通 AllReduce 主链，理解校验机制，并研究 AllGather、ReduceScatter、Broadcast 以及其他六类 adapter；追加的 <a href="nccl-adapter-deep-dive.html">adapter 走读</a> 与 <a href="nccl-report-and-timing-research.html">计时和 JSON 报告研究</a> 覆盖了变长流量、rank 时间聚合、per-iteration timing 和输出 schema。仍未在 GPU/NCCL/MPI 环境实测，也未完整验证多机 rank 映射和不同 device/RMA 路径。下一步应整理 nccl-tests 功能/参数/结果证据覆盖清单，并标注静态源码结论与待硬件验证项；满足用户要求的源码理解阶段后，再进入 Keysight 录屏对照。</p>
+
+</article></main>
+<footer>? nccl-validation-layout-research.md ???? ? ??????????????????</footer>
+</body>
+</html>

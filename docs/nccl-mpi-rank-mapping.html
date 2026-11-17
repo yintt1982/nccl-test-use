@@ -1,0 +1,68 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="description" content="nccl-tests：MPI rank、GPU 映射与 split communicator">
+<title>nccl-tests：MPI rank、GPU 映射与 split communicator | nccl-tests ????</title>
+<style>
+:root{color-scheme:light;--ink:#17212b;--muted:#5b6775;--line:#d8e0e8;--paper:#fff;--canvas:#f3f6f9;--accent:#1769aa;--code:#f1f4f7}
+*{box-sizing:border-box}body{margin:0;background:var(--canvas);color:var(--ink);font:16px/1.72 system-ui,-apple-system,"Segoe UI",sans-serif}
+header{background:#102a43;color:#fff;padding:18px max(24px,calc((100vw - 1120px)/2));display:flex;justify-content:space-between;align-items:center;gap:16px}
+header strong{font-size:15px;letter-spacing:.02em}header a{color:#cfe8ff;text-decoration:none;font-size:14px}
+main{max-width:1120px;margin:32px auto;padding:44px 56px;background:var(--paper);border:1px solid var(--line);border-radius:12px;box-shadow:0 8px 30px #19324b0c}
+article{max-width:900px;margin:auto}h1,h2,h3,h4{line-height:1.3;color:#102a43}h1{font-size:2.15rem;margin:0 0 1.4rem;padding-bottom:1rem;border-bottom:1px solid var(--line)}h2{font-size:1.55rem;margin-top:2.2rem;padding-bottom:.4rem;border-bottom:1px solid var(--line)}h3{font-size:1.2rem;margin-top:1.8rem}a{color:var(--accent);text-underline-offset:3px}p,ul,ol{margin:.85rem 0}li{padding-left:.2rem;margin:.25rem 0}blockquote{margin:1.2rem 0;padding:.2rem 1rem;border-left:4px solid #77a9d3;color:var(--muted);background:#f6f9fc}code{font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-size:.9em;background:var(--code);padding:.12em .35em;border-radius:4px}pre{overflow:auto;padding:18px;background:#101820;color:#e8eef4;border-radius:8px;line-height:1.55}pre code{background:transparent;padding:0;color:inherit}table{border-collapse:collapse;width:100%;display:block;overflow-x:auto;margin:1.2rem 0;font-size:.94rem}th,td{border:1px solid var(--line);padding:9px 12px;text-align:left;vertical-align:top}th{background:#edf3f8;color:#15334d}hr{border:0;border-top:1px solid var(--line);margin:2rem 0}img{max-width:100%;height:auto}footer{max-width:1120px;margin:0 auto 30px;padding:0 16px;text-align:center;color:var(--muted);font-size:13px}
+@media(max-width:720px){main{margin:12px;padding:26px 20px;border-radius:8px}header{padding:14px 20px}h1{font-size:1.7rem}body{font-size:15px}}
+</style>
+</head>
+<body>
+<header><strong>nccl-tests ????</strong><a href="nccl-mpi-rank-mapping.md">?? Markdown ???</a></header>
+<main><article>
+<h1>nccl-tests：MPI rank、GPU 映射与 split communicator</h1>
+<p>研究日期：2026-10-26。静态源码研究，不代表多机实测。依据 <code>src/common.cu</code> 与 README。</p>
+<h2>1. 四种编号不能混为一谈</h2>
+<ul>
+<li><code>proc</code>：MPI_COMM_WORLD 中的进程 rank，由启动器分配。</li>
+<li><code>localRank</code>：按 hostname 对比，在本机 MPI 进程中的序号；代码统计 MPI 全局序列中本进程之前、hostname hash 相同的进程数。</li>
+<li>CUDA device ID：默认以 <code>localRank * nThreads * nGpus</code> 为起始号连续分配；<code>NCCL_TESTS_DEVICE</code> 可覆盖起始编号。</li>
+<li>NCCL rank：在本次 NCCL communicator 中的 rank。未 split 时，进程段起点为 <code>proc * nThreads * nGpus</code>；线程和 GPU 在该段内继续排列。<a href="../nccl-tests-master/src/common.cu#L1570">host/local rank 与 split</a> <a href="../nccl-tests-master/src/common.cu#L1647">GPU 选择与 communicator init</a> <a href="../nccl-tests-master/src/common.cu#L1018">firstRank</a></li>
+</ul>
+<p>总 rank 数为 MPI 进程数 × 每进程线程数 × 每线程 GPU 数。MPI 进程数由 <code>mpirun -np</code> 管理，不是 nccl-tests <code>-g</code>。<a href="../nccl-tests-master/README.md#L37">README</a></p>
+<h2>2. 示例映射</h2>
+<p>假设单机两个 MPI 进程、每进程 <code>-g 2 -t 1</code>，默认无 split，且没有 <code>NCCL_TESTS_DEVICE</code> 覆盖：</p>
+<table>
+<thead>
+<tr>
+<th style="text-align:right">MPI proc</th>
+<th style="text-align:right">localRank</th>
+<th>CUDA devices</th>
+<th>NCCL ranks</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td style="text-align:right">0</td>
+<td style="text-align:right">0</td>
+<td>0, 1</td>
+<td>0, 1</td>
+</tr>
+<tr>
+<td style="text-align:right">1</td>
+<td style="text-align:right">1</td>
+<td>2, 3</td>
+<td>2, 3</td>
+</tr>
+</tbody>
+</table>
+<p>多线程时每进程仍按 thread 再 GPU 排列：<code>proc * threads * gpus + thread * gpus + gpuIndex</code>。设备选择也为每个进程的本地 GPU 区间连续编号。<a href="../nccl-tests-master/src/common.cu#L1018">rank 公式</a> <a href="../nccl-tests-master/src/common.cu#L1657">逐 GPU 初始化</a></p>
+<h2>3. split 如何改变 communicator</h2>
+<p>设置 <code>NCCL_TESTS_SPLIT</code> 后，程序由全局 MPI proc 计算 color，再通过 <code>MPI_Comm_split</code> 将同 color 的进程组成子 communicator。<code>NCCL_TESTS_SPLIT_MASK</code> 等价于按掩码 AND。程序在子 communicator 中计算 <code>ncclProcs/ncclProc</code>，然后以子组进程数 × threads × GPUs 创建 NCCL communicator；GPU 本地选择和设备报告仍使用原 MPI proc/localRank 体系。<a href="../nccl-tests-master/src/common.cu#L1587">split 计算与 MPI split</a> <a href="../nccl-tests-master/src/common.cu#L1613">子组 NCCL 规模</a> <a href="../nccl-tests-master/src/common.cu#L1639">communicator 创建</a></p>
+<p>README 举例：8 GPU/节点情况下，<code>AND 0x7</code> 可让同一节点编号对应的 rank 跨节点成组，<code>OR 0x7</code> 则将节点内 GPU 分到组；实际 color 取决于 MPI proc 的全局排列，因此 launcher 的 rank 排布会影响分组。带宽按每组报告，要估算所有并行组总吞吐量需乘组数。<a href="../nccl-tests-master/README.md#L110">split 例子及口径</a></p>
+<h2>4. 性能归并的一个边界</h2>
+<p><code>-a</code> 的 0/1/2/3 分别选择 rank 0、跨 ranks 平均、最小、最大时间。实现的 MPI 时间归并使用 <code>MPI_COMM_WORLD</code> 做 Allreduce，并在平均模式除以全局 MPI 进程数 × 线程数；GPU rank 时间先在本地线程/进程范围内聚合。因此启用 split 时，各子 communicator 测试时间仍在 MPI_COMM_WORLD 归并。要解释并发 split 的单组负载性能时，应同时保留 color/group 信息以及 <code>-a</code> 口径，不能假定报告时间只在同一个 NCCL 子组内取最大值。<a href="../nccl-tests-master/src/common.cu#L324">归并实现</a> <a href="../nccl-tests-master/README.md#L81">README 参数</a></p>
+<p>这部分来自静态阅读；不同 MPI launcher 的 proc 排列及其实际对网络/NIC 的影响尚需实机确认。</p>
+
+</article></main>
+<footer>? nccl-mpi-rank-mapping.md ???? ? ??????????????????</footer>
+</body>
+</html>

@@ -1,0 +1,171 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="description" content="nccl-tests 整体架构与功能模块">
+<title>nccl-tests 整体架构与功能模块 | nccl-tests ????</title>
+<style>
+:root{color-scheme:light;--ink:#17212b;--muted:#5b6775;--line:#d8e0e8;--paper:#fff;--canvas:#f3f6f9;--accent:#1769aa;--code:#f1f4f7}
+*{box-sizing:border-box}body{margin:0;background:var(--canvas);color:var(--ink);font:16px/1.72 system-ui,-apple-system,"Segoe UI",sans-serif}
+header{background:#102a43;color:#fff;padding:18px max(24px,calc((100vw - 1120px)/2));display:flex;justify-content:space-between;align-items:center;gap:16px}
+header strong{font-size:15px;letter-spacing:.02em}header a{color:#cfe8ff;text-decoration:none;font-size:14px}
+main{max-width:1120px;margin:32px auto;padding:44px 56px;background:var(--paper);border:1px solid var(--line);border-radius:12px;box-shadow:0 8px 30px #19324b0c}
+article{max-width:900px;margin:auto}h1,h2,h3,h4{line-height:1.3;color:#102a43}h1{font-size:2.15rem;margin:0 0 1.4rem;padding-bottom:1rem;border-bottom:1px solid var(--line)}h2{font-size:1.55rem;margin-top:2.2rem;padding-bottom:.4rem;border-bottom:1px solid var(--line)}h3{font-size:1.2rem;margin-top:1.8rem}a{color:var(--accent);text-underline-offset:3px}p,ul,ol{margin:.85rem 0}li{padding-left:.2rem;margin:.25rem 0}blockquote{margin:1.2rem 0;padding:.2rem 1rem;border-left:4px solid #77a9d3;color:var(--muted);background:#f6f9fc}code{font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-size:.9em;background:var(--code);padding:.12em .35em;border-radius:4px}pre{overflow:auto;padding:18px;background:#101820;color:#e8eef4;border-radius:8px;line-height:1.55}pre code{background:transparent;padding:0;color:inherit}table{border-collapse:collapse;width:100%;display:block;overflow-x:auto;margin:1.2rem 0;font-size:.94rem}th,td{border:1px solid var(--line);padding:9px 12px;text-align:left;vertical-align:top}th{background:#edf3f8;color:#15334d}hr{border:0;border-top:1px solid var(--line);margin:2rem 0}img{max-width:100%;height:auto}footer{max-width:1120px;margin:0 auto 30px;padding:0 16px;text-align:center;color:var(--muted);font-size:13px}
+@media(max-width:720px){main{margin:12px;padding:26px 20px;border-radius:8px}header{padding:14px 20px}h1{font-size:1.7rem}body{font-size:15px}}
+</style>
+</head>
+<body>
+<header><strong>nccl-tests ????</strong><a href="nccl-tests-architecture.md">?? Markdown ???</a></header>
+<main><article>
+<h1>nccl-tests 整体架构与功能模块</h1>
+<p>研究日期：2026-10-26。范围：源码静态分析；未执行 GPU 性能测试。基线目录：<code>E:/dpi/nccl-tests-master</code>。2026-10-26 查询上游 master 得到提交 <code>afd59abab774a6a4b492eb344bd0c845a0b7bb4d</code>（提交时间 2026-10-05T19:40:17Z）；逐一比较上游树的 79 个文件，均存在且 Git blob 哈希一致。这是 master 快照核验，不是最新正式 release 声明。上游提交与逐文件核验见 <a href="nccl-source-verification.json">来源核验</a>。本文先建立架构，不设计 WebUI。</p>
+<h2>1. 系统边界</h2>
+<p>nccl-tests 是测试 NCCL 通信性能和结果正确性的程序集合。常规 collective 测试由“公共测试框架 + 一个操作适配器 + 工具/验证模块”链接成单独的可执行文件。它组织可重复的测试工作负载，调用 NCCL，并计算/输出测量结果。普通 host API 路径的具体通信算法、协议和传输实现属于链接的 NCCL 库；本版本还包含 device API / host RMA 等可选实现路径，因此不能笼统说仓库里完全没有通信 kernel。</p>
+<p>依据：<a href="../nccl-tests-master/src/Makefile#L45">构建链接规则</a>、<a href="../nccl-tests-master/src/common.cu#L554">调用分支</a>、<a href="../nccl-tests-master/src/common.h#L115">适配接口</a>。</p>
+<pre><code class="language-mermaid">flowchart TD
+ A[命令行参数 / 环境变量 / MPI启动] --&gt; B[common.cu 公共测试框架]
+ B &lt;--&gt; C[操作适配器 all_reduce.cu 等]
+ B --&gt; D[CUDA 设备 / 内存 / stream / event]
+ B --&gt; E[verifiable 数据生成与校验]
+ B --&gt; F[util.cu 结果格式化 / JSON / 统计]
+ C --&gt; G[NCCL host API 或可选 device API / RMA]
+ G --&gt; H[GPU及实际通信路径]
+ F --&gt; I[控制台 / JSON文件]
+ I --&gt; J[tools/analyze_perf_json.py 离线分析]
+ K[MPI 进程协调 / ID广播 / 汇总] &lt;--&gt; B
+</code></pre>
+<p>图描述常规 collective 测试；comm_ops 和 GIN 是另外的测试入口，不经过完全相同的公共执行主链。</p>
+<h2>2. 三类测试入口</h2>
+<table>
+<thead>
+<tr>
+<th>类别</th>
+<th>作用</th>
+<th>源码与约束</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Collective / 通信模式性能测试</td>
+<td>对消息大小、类型、规约操作等进行扫描，测量耗时与带宽并校验结果</td>
+<td><code>src/all_reduce.cu</code>、<code>all_gather.cu</code>、<code>reduce_scatter.cu</code>、<code>broadcast.cu</code>、<code>reduce.cu</code>、<code>alltoall.cu</code>、<code>alltoallv.cu</code>、<code>gather.cu</code>、<code>scatter.cu</code>、<code>sendrecv.cu</code>、<code>hypercube.cu</code>；实际构建由依赖版本决定</td>
+</tr>
+<tr>
+<td>通信器操作测试</td>
+<td>测量 init / split / shrink / grow 的操作延迟</td>
+<td><code>src/comm_ops.cu</code> 有自己的 main 和参数；不是消息传输带宽测试</td>
+</tr>
+<tr>
+<td>GIN device API 微基准</td>
+<td>测量 GPU 发起的 put/get/signal 等操作延迟、带宽或消息速率</td>
+<td><code>src/device_api/gin/</code>；本地 README 要求 MPI、NCCL &gt;= 2.30.7、两个 rank 且每 rank 一个 GPU</td>
+</tr>
+</tbody>
+</table>
+<p>依据：<a href="../nccl-tests-master/src/Makefile#L45">程序列表与编译条件</a>、<a href="../nccl-tests-master/src/comm_ops.cu#L1177">通信器入口</a>、<a href="../nccl-tests-master/src/device_api/gin/README.md#L1">GIN说明</a>。这些条件描述本次源码，不是所有历史版本的能力。</p>
+<h2>3. 功能模块职责</h2>
+<table>
+<thead>
+<tr>
+<th>模块</th>
+<th>职责</th>
+<th>入口/接口</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>构建系统</td>
+<td>选择 CUDA/NCCL/MPI 依赖、条件编译、生成每种测试二进制</td>
+<td>根目录和 src 的 Makefile / CMakeLists.txt</td>
+</tr>
+<tr>
+<td>配置入口</td>
+<td>解析命令行、检查参数组合、初始化输出、启动运行</td>
+<td><code>common.cu:1151 main</code></td>
+</tr>
+<tr>
+<td>进程与设备组织</td>
+<td>获取 MPI rank/local rank、按 color 分组、广播 NCCL unique ID、配置 GPU、分配缓冲和线程参数</td>
+<td><code>common.cu:1570 run</code></td>
+</tr>
+<tr>
+<td>执行上下文</td>
+<td>携带 GPU、stream、communicator、buffer、规模、错误与带宽累计信息</td>
+<td><code>common.h:152 threadArgs</code></td>
+</tr>
+<tr>
+<td>操作适配层</td>
+<td>定义某个 collective 的数据量、数据初始化、调用方式、带宽换算，枚举适用测试组合</td>
+<td><code>common.h:115 testColl</code>、<code>:134 testEngine</code>；各操作 .cu</td>
+</tr>
+<tr>
+<td>扫描与执行层</td>
+<td>扫描消息规模，对 out-of-place 和 in-place 分别执行预热、正式测量、校验</td>
+<td><code>common.cu:942 TimeTest</code>、<code>:720 BenchTime</code></td>
+</tr>
+<tr>
+<td>调用与同步层</td>
+<td>逐 GPU 发起操作，处理 group 调用及可选实现，等待完成并检查异步错误/超时</td>
+<td><code>common.cu:554 startColl</code>、<code>:655 completeColl</code>、<code>:496 testStreamSynchronize</code></td>
+</tr>
+<tr>
+<td>正确性模块</td>
+<td>生成可验证输入、构造预期结果、检查数据与越界区域</td>
+<td><code>verifiable/</code>、<code>common.cu:277 CheckDelta</code>、<code>:449 CheckData</code></td>
+</tr>
+<tr>
+<td>测量与统计</td>
+<td>整体迭代计时；可选 CUDA event 单迭代计时；跨线程/进程归并；统计分位数等</td>
+<td><code>common.cu:666 getElapsedTimes</code>、<code>:720 BenchTime</code>；<code>util.cu:632 computeIterStats</code></td>
+</tr>
+<tr>
+<td>报告模块</td>
+<td>输出设备信息、结果表、JSON、错误与可选内存/tuning信息</td>
+<td><code>util.cu:364 jsonOutputInit</code>、<code>:594 writeBenchmarkLineBody</code>、<code>:719 writeDeviceReport</code>、<code>:895 writeResultFooter</code></td>
+</tr>
+<tr>
+<td>平台辅助与后处理</td>
+<td>操作系统差异封装；分析已生成的单迭代 JSON</td>
+<td><code>os/os.h</code>、<code>os/linux.cc</code>、<code>os/windows.cc</code>；<code>tools/analyze_perf_json.py</code></td>
+</tr>
+</tbody>
+</table>
+<h2>4. 最重要的两个接口</h2>
+<p><code>testEngine</code> 是“如何展开这一类测试”的接口：<code>getBuffSize</code> 决定缓冲区需求，<code>runTest</code> 枚举适用的类型、规约操作、root 等组合并进入公共计时逻辑；另有受 NCCL 版本约束的通信器配置/device requirements 回调。</p>
+<p><code>testColl</code> 是“一次操作如何做”的接口：<code>getCollByteCount</code> 计算发送/接收/调用数据量和原地偏移；<code>initData</code> 初始化；<code>runColl</code> 发起操作；<code>getBw</code> 将测量时间转换为该操作的带宽口径。</p>
+<p>这是编译链接时接入的 C/C++ 函数指针接口，不是运行时 Web 插件系统。<a href="../nccl-tests-master/src/common.h#L115">接口定义</a>、<a href="../nccl-tests-master/src/Makefile#L124">链接规则</a>。</p>
+<h2>5. 常规测试主链</h2>
+<pre><code class="language-text">main：参数解析、合法性检查、MPI/输出初始化
+  → run：进程分组、设备信息、NCCL ID、内存/stream/communicator准备
+  → threadRunTests（parallel_init时先经过threadInit）
+  → ncclTestEngine.runTest：选择具体测试组合
+  → TimeTest：遍历消息大小和运行周期
+      → BenchTime(out-of-place)
+      → BenchTime(in-place)
+          → 可选数据初始化
+          → warmup → 完成同步 → Barrier
+          → timed iterations × aggregation → 完成同步
+          → 计算时间、跨线程/进程归并、getBw换算
+          → 单独的正确性测试与错误汇总
+          → 写入结果，按需写单迭代统计
+  → 汇总、报告、释放资源、MPI结束
+</code></pre>
+<p>依据：<a href="../nccl-tests-master/src/common.cu#L979">线程入口</a>、<a href="../nccl-tests-master/src/common.cu#L942">扫描</a>、<a href="../nccl-tests-master/src/common.cu#L720">计时与校验</a>、<a href="../nccl-tests-master/src/common.cu#L1825">线程装配</a>。上图中的 in-place 是框架尝试路径；具体操作可明确拒绝该模式（如 AlltoAll、SendRecv），不能认为所有操作均支持。不同 blocking / CUDA Graph 模式会调整同步与计时路径，不应把示意链当成所有模式的逐行时序。</p>
+<h2>6. 必须先建立的概念</h2>
+<ul>
+<li><strong>MPI进程不等于NCCL rank。</strong> 常规均匀配置、未分组时，总 rank 数是进程数 × 每进程线程数 × 每线程 GPU 数。启用 split 时，要按组内进程数理解 communicator 大小；color 在本源码中按进程号计算。参考 <a href="../nccl-tests-master/README.md#L37">README</a>、<a href="../nccl-tests-master/src/common.cu#L1570">分组代码</a>。</li>
+<li><strong>MPI和NCCL职责不同。</strong> 这里 MPI 用于进程协调、ID 分发和结果归并；被测普通集合通信调用进入 NCCL。参考 <a href="../nccl-tests-master/src/common.cu#L1570">run</a>、<a href="../nccl-tests-master/src/common.cu#L554">startColl</a>。</li>
+<li><strong>time不是一律“CUDA event测出的纯kernel时间”。</strong> 常规总体计时从CPU计时器出发并等待操作完成；单迭代功能另用event；CPU-time选项及blocking/graph模式改变口径。参考 <a href="../nccl-tests-master/src/common.cu#L720">BenchTime</a>。</li>
+<li><strong>algbw和busbw是计算结果。</strong> busbw 使用操作相关换算因子，不是 NIC 端口计数器直接测到的实际线速。参考 <a href="../nccl-tests-master/doc/PERFORMANCE.md#L1">PERFORMANCE</a>。</li>
+<li><strong>性能迭代与校验迭代分开。</strong> 正式计时后还会重新初始化并执行校验；不能把 #wrong=0 解读为所有计时迭代逐一通过校验。关闭校验时也不能声称校验通过。参考 <a href="../nccl-tests-master/src/common.cu#L720">BenchTime</a>。</li>
+<li><strong>配置不一定等于实际执行规模。</strong> 本地 run 会根据可用显存约束缩减 maxBytes；解读报告必须看实际输出。参考 <a href="../nccl-tests-master/src/common.cu#L1628">显存限制</a>。</li>
+</ul>
+<h2>7. 后续阅读顺序</h2>
+<p>先用 AllReduce 贯穿“输入→执行→结果”主链，再阅读 rank/communicator 初始化、消息规模与缓冲区计算、计时与统计、正确性验证、不同 collective 的差异。随后覆盖高级选项与两个独立微基准框架。需要解释 NCCL 算法选择和底层传输时再引入匹配版本的 NCCL 源码。WebUI 原型不属于本阶段。</p>
+<p>相关细读：<a href="nccl-collectives-metrics-research.html">collective与指标研究</a>。</p>
+
+</article></main>
+<footer>? nccl-tests-architecture.md ???? ? ??????????????????</footer>
+</body>
+</html>

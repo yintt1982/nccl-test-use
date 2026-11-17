@@ -1,0 +1,326 @@
+<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>nccl-tests 运行复现与诊断配置</title><style>:root{color-scheme:light;--ink:#17212b;--line:#d8e0e8;--paper:#fff;--canvas:#f3f6f9;--accent:#1769aa;--code:#f1f4f7}*{box-sizing:border-box}body{margin:0;background:var(--canvas);color:var(--ink);font:16px/1.72 system-ui,-apple-system,"Segoe UI",sans-serif}header{background:#102a43;color:#fff;padding:18px max(24px,calc((100vw - 1120px)/2));display:flex;justify-content:space-between;align-items:center}header a{color:#cfe8ff}main{max-width:1200px;margin:32px auto;padding:44px 56px;background:var(--paper);border:1px solid var(--line);border-radius:12px}article{max-width:1040px;margin:auto}h1,h2,h3{line-height:1.3;color:#102a43}h1{font-size:2.1rem;border-bottom:1px solid var(--line);padding-bottom:1rem}h2{font-size:1.5rem;margin-top:2.2rem;border-bottom:1px solid var(--line)}a{color:var(--accent)}code{font-family:ui-monospace,Consolas,monospace;background:var(--code);padding:.12em .35em;border-radius:4px}pre{overflow:auto;padding:16px;background:#101820;color:#e8eef4;border-radius:8px}table{border-collapse:collapse;width:100%;display:block;overflow-x:auto;margin:1.2rem 0;font-size:.93rem}th,td{border:1px solid var(--line);padding:9px 12px;text-align:left;vertical-align:top;min-width:130px}th{background:#edf3f8;color:#15334d}@media(max-width:720px){main{margin:12px;padding:26px 20px}body{font-size:15px}}</style></head><body><header><strong>NCCL Tests · 复现与诊断</strong><a href="nccl-ui-reproducibility-diagnostics.md">查看 Markdown</a></header><main><article><h1>nccl-tests 运行复现与诊断配置细化</h1>
+<p>研究日期：2026-10-26<br />
+页面：<code>http://112.25.236.50:9007/</code><br />
+依据：页面当前配置、<code>E:/dpi/nccl-tests-master/README.md</code>、<code>src/common.cu</code>、<code>src/util.cu</code>。以下为源码静态分析，未执行 GPU 实测。</p>
+<h2>1. 为什么当前“MPI 进程数 + 每进程 GPU 数”还不够</h2>
+<p>页面当前可以表达：</p>
+<pre><code class="language-text">MPI 进程数 × 每进程线程数(-t) × 每线程 GPU 数(-g) = 总 NCCL rank 数
+</code></pre>
+<p>但多机测试还需要回答四个问题：</p>
+<ol>
+<li>MPI 进程分布在哪些节点？</li>
+<li>每个 MPI 进程被分配了哪些 GPU？</li>
+<li>CUDA device id 与 NCCL rank、MPI rank、local rank 如何对应？</li>
+<li>是否把 MPI world 拆成了多个 NCCL communicator group？</li>
+</ol>
+<p>这些信息会改变通信拓扑和带宽口径，所以应该成为任务配置和报告的一部分。</p>
+<h2>2. 节点 / hostfile 配置</h2>
+<h3>2.1 页面应增加的字段</h3>
+<p>建议在“GPU 与 Rank 布局”下增加“节点与 MPI 启动”区域：</p>
+<table>
+<thead>
+<tr>
+  <th>字段</th>
+  <th>作用</th>
+  <th>示例</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+  <td>节点列表</td>
+  <td>明确允许 MPI 使用的主机</td>
+  <td><code>gpu01,gpu02</code></td>
+</tr>
+<tr>
+  <td>Hostfile</td>
+  <td>使用 MPI 的主机文件及槽位</td>
+  <td><code>gpu01 slots=4</code>、<code>gpu02 slots=4</code></td>
+</tr>
+<tr>
+  <td>总 MPI 进程数</td>
+  <td>对应 <code>mpirun -np</code> / <code>mpiexec -n</code></td>
+  <td><code>8</code></td>
+</tr>
+<tr>
+  <td>每节点进程数</td>
+  <td>对应 launcher 的 ppr 或 machinefile 约束</td>
+  <td><code>4</code></td>
+</tr>
+<tr>
+  <td>每进程线程数</td>
+  <td><code>-t</code></td>
+  <td><code>1</code></td>
+</tr>
+<tr>
+  <td>每线程 GPU 数</td>
+  <td><code>-g</code></td>
+  <td><code>1</code></td>
+</tr>
+<tr>
+  <td>进程绑定</td>
+  <td>CPU/NUMA 绑定策略</td>
+  <td><code>bind-to none</code>、<code>slot</code>、<code> numa</code></td>
+</tr>
+<tr>
+  <td>额外 MPI 参数</td>
+  <td>不同 MPI 实现的专用参数</td>
+  <td>Open MPI、MPICH、Intel MPI 分开保存</td>
+</tr>
+<tr>
+  <td>nccl-tests binary</td>
+  <td>实际运行的路径及构建类型</td>
+  <td><code>all_reduce_perf_mpi</code></td>
+</tr>
+</tbody>
+</table>
+<p>不要把“节点列表”和“hostfile”当成两个必须同时填写的条件。它们是两种启动来源：简单任务可以用节点列表生成 launcher 参数；复杂集群可以直接引用已审计的 hostfile。</p>
+<h3>2.2 命令预览应呈现完整启动命令</h3>
+<p>单节点时可以是：</p>
+<pre><code class="language-bash">./build/all_reduce_perf -b 8 -e 128M -f 2 -g 4
+</code></pre>
+<p>多节点时，页面不能只显示 binary 后面的参数，而应显示完整命令，例如：</p>
+<pre><code class="language-bash">mpirun -np 8 \
+  --host gpu01:4,gpu02:4 \
+  --map-by ppr:4:node --bind-to none \
+  ./build/all_reduce_perf_mpi -b 8 -e 8G -f 2 -g 1
+</code></pre>
+<p><code>--host</code>、<code>--map-by</code>、<code>--bind-to</code> 是 MPI 实现相关的示意参数；实际页面应根据用户选择的 Open MPI、MPICH 或其他 launcher 生成对应语法，不应把某个 MPI 实现的参数硬编码成通用字段。</p>
+<h3>2.3 必须做的校验</h3>
+<p>提交前至少检查：</p>
+<ul>
+<li><code>MPI 进程数 × 每进程 GPU 数</code> 是否与节点 GPU 总量匹配；</li>
+<li><code>-t × -g</code> 是否超过每个 MPI 进程所在节点可用 GPU 数；</li>
+<li>binary 是否以 <code>MPI=1</code> 构建，多进程时不能使用单进程 binary；</li>
+<li>hostfile 中的节点是否可达、槽位是否足够；</li>
+<li>每个节点的 CUDA/NCCL/MPI 版本和 GPU 型号是否满足一致性要求；</li>
+<li><code>CUDA_VISIBLE_DEVICES</code>、launcher 的 GPU 绑定参数和 <code>NCCL_TESTS_DEVICE</code> 是否互相覆盖。</li>
+</ul>
+<h2>3. GPU 映射配置</h2>
+<h3>3.1 当前 nccl-tests 的默认映射</h3>
+<p>源码在每个 MPI 进程中计算 <code>localRank</code>，默认给该进程分配连续 GPU：</p>
+<pre><code class="language-text">默认起始 GPU = localRank × -t × -g
+本进程第 i 个测试 GPU = 默认起始 GPU + i
+</code></pre>
+<p>例如每节点 4 张 GPU、每个进程 1 个线程、每线程 2 张 GPU：</p>
+<p>| local rank | 分配的 CUDA device |
+|---:|---|
+| 0 | 0, 1 |
+| 1 | 2, 3 |
+|
+如果通过 <code>NCCL_TESTS_DEVICE=4</code> 设置起点，则进程从 device 4 开始按连续编号分配。这个环境变量是“起始 device”语义，不是任意 GPU 列表映射。</p>
+<h3>3.2 页面应区分的编号</h3>
+<p>报告里建议同时展示：</p>
+<table>
+<thead>
+<tr>
+  <th>编号</th>
+  <th>含义</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+  <td>MPI world rank</td>
+  <td>MPI_COMM_WORLD 中的进程编号</td>
+</tr>
+<tr>
+  <td>local rank</td>
+  <td>当前节点内的 MPI 进程序号</td>
+</tr>
+<tr>
+  <td>NCCL group/color</td>
+  <td>split 后所属 communicator 组</td>
+</tr>
+<tr>
+  <td>NCCL rank</td>
+  <td>当前 communicator 内的 rank</td>
+</tr>
+<tr>
+  <td>thread id</td>
+  <td>nccl-tests 进程内 host 线程编号</td>
+</tr>
+<tr>
+  <td>CUDA device</td>
+  <td>实际 CUDA device id</td>
+</tr>
+<tr>
+  <td>hostname</td>
+  <td>节点名</td>
+</tr>
+<tr>
+  <td>PCI bus id</td>
+  <td>GPU 的 PCI 地址</td>
+</tr>
+</tbody>
+</table>
+<p>源码的设备报告已经输出 <code>Rank</code>、<code>Group</code>、<code>Pid</code>、<code>hostname</code>、<code>device</code>、PCI 地址和 GPU 型号，并写入 JSON 的 <code>devices</code> 数组。网管应直接把这些字段作为拓扑表，而不是只画 <code>R0/G0</code>。</p>
+<h3>3.3 任意映射怎么表达</h3>
+<p>nccl-tests 本身的默认逻辑主要是连续 device 分配。要表达非连续映射，例如：</p>
+<pre><code class="language-text">MPI rank 0 -&gt; GPU 0
+MPI rank 1 -&gt; GPU 3
+MPI rank 2 -&gt; GPU 1
+MPI rank 3 -&gt; GPU 2
+</code></pre>
+<p>网管需要在 launcher 层使用节点级 <code>CUDA_VISIBLE_DEVICES</code>、MPI local-rank 环境变量或包装脚本完成。页面应把这类内容保存为“GPU 映射策略/启动模板”，不要伪装成 <code>-g</code> 能完成的功能。</p>
+<h2>4. <code>NCCL_TESTS_SPLIT</code> rank 分组</h2>
+<h3>4.1 它做什么</h3>
+<p><code>NCCL_TESTS_SPLIT</code> 不是普通 nccl-tests CLI 参数，而是环境变量。程序先读取 MPI world rank，再根据表达式计算 <code>color</code>，然后调用 <code>MPI_Comm_split</code>：</p>
+<pre><code class="language-text">MPI world rank -&gt; color/group -&gt; group 内 communicator -&gt; NCCL ranks
+</code></pre>
+<p>同一 color 的 MPI 进程进入同一个 communicator。每个 MPI 进程中的 <code>-t × -g</code> 个 GPU 会跟随这个进程加入该组。</p>
+<p>可用形式包括：</p>
+<pre><code class="language-text">NCCL_TESTS_SPLIT=&quot;AND 0x7&quot;   # 或 &amp;0x7
+NCCL_TESTS_SPLIT=&quot;OR 0x7&quot;    # 或 |0x7
+NCCL_TESTS_SPLIT=&quot;MOD 8&quot;      # 或 %8
+NCCL_TESTS_SPLIT=&quot;DIV 8&quot;      # 或 /8
+NCCL_TESTS_SPLIT_MASK=&quot;7&quot;     # 等价于 AND 0x7
+</code></pre>
+<h3>4.2 8 个 MPI 进程的例子</h3>
+<p>对于 MPI world rank <code>0..7</code>：</p>
+<ul>
+<li><code>MOD 2</code>：分成两个组，偶数 rank 一组、奇数 rank 一组；</li>
+<li><code>MOD 8</code>：形成 8 个组，每组一个 MPI 进程；</li>
+<li><code>DIV 4</code>：rank 0–3 为一组，rank 4–7 为另一组；</li>
+<li><code>AND 0x7</code>：在 8 个进程的范围内，效果相当于按低 3 位形成颜色。</li>
+</ul>
+<p>网管要在提交前根据 MPI 进程数计算预览：</p>
+<pre><code class="language-text">world rank | color | group size | group-local rank | assigned GPUs
+</code></pre>
+<h3>4.3 报告口径的变化</h3>
+<p>split 后，测试的 communicator rank 数不再等于 MPI world size。带宽、计时和正确性都属于各自 group。README 明确说明报告的 bandwidth 是“每组”带宽；如果要估计所有并发组的总吞吐，需要在组规模和测试目的相同的前提下再汇总。</p>
+<p>因此报告中至少要有：</p>
+<ul>
+<li>world size 与 group size；</li>
+<li>group/color；</li>
+<li>group-local rank；</li>
+<li>每组的 algbw/busbw；</li>
+<li>并行组数量；</li>
+<li>是否展示“每组值”还是“所有组估算总和”。</li>
+</ul>
+<p>不能把 split 后多个组的 busbw 直接平均后标成单个 NCCL communicator 的性能。</p>
+<h2>5. <code>-M/-S/-u/-U</code> 诊断选项</h2>
+<h3><code>-M</code>：内存使用报告</h3>
+<p><code>-M 1</code> 打开内存报告。源码在测试结束时报告至少三类 GPU 内存：</p>
+<ul>
+<li><code>Initialization</code>：NCCL communicator 初始化消耗；</li>
+<li><code>User-Allocated</code>：测试 send/recv/expected 等用户缓冲区；</li>
+<li><code>Collective</code>：collective 执行期间的额外内存。</li>
+</ul>
+<p>适合用于判断：消息规模变大时是否接近显存上限、初始化开销是否异常、不同注册/实现模式是否改变显存占用。它不是 GPU 实时监控曲线，也不能替代 NVML 的功耗、温度和实时显存采样。</p>
+<p>UI 建议：增加“内存报告”开关；报告页增加按节点、GPU、阶段的内存表，并把测试时的 maxBytes 自动降级记录下来。源码在内存不足时可能降低最大测试尺寸，报告必须显示实际运行的 <code>maxBytes</code>。</p>
+<h3><code>-S</code>：报告时间戳</h3>
+<p><code>-S 1</code> 在性能报告行中增加格式类似 <code>%Y-%m-%d %H:%M:%S</code> 的时间戳。它适合：</p>
+<ul>
+<li>对齐 NCCL 日志、系统日志、交换机/网卡监控；</li>
+<li>排查某一轮测试是否与系统事件同时发生；</li>
+<li>在长时间、多轮 <code>-N</code> 运行中定位异常轮次。</li>
+</ul>
+<p>它是“报告行时间戳”，不是每个 CUDA event 的高精度时间戳，也不等于完整 trace。页面应显示测试时区和任务开始/结束时间，避免只保存一段无时区的字符串。</p>
+<h3><code>-u</code>：故意制造 buffer 非对齐</h3>
+<p><code>-u N</code> 让 send/recv buffer 从第 <code>N</code> 个元素开始偏移，源码按数据类型元素大小换算为字节偏移。这是鲁棒性和边界场景测试：</p>
+<ul>
+<li>检验非理想对齐下是否仍能正确运行；</li>
+<li>观察对齐变化对性能的影响；</li>
+<li>暴露自定义 kernel、注册内存或特殊实现对对齐的隐含假设。</li>
+</ul>
+<p>它不属于普通性能基线，建议放在“压力/诊断场景”，默认关闭。报告必须把 <code>unalign</code> 值作为配置维度，否则不同对齐条件的结果容易被错误地放在同一趋势图中。</p>
+<h3><code>-U</code>：NCCL tuning 信息</h3>
+<p><code>-U 1</code> 请求报告 NCCL 实际选择的调优信息。源码可在结果中增加：</p>
+<ul>
+<li>implementation；</li>
+<li>algorithm；</li>
+<li>protocol；</li>
+<li>kernel variant；</li>
+<li>synchronization strategy；</li>
+<li>channel 数；</li>
+<li>warp 数；</li>
+<li>network chunk size。</li>
+</ul>
+<p>它主要用于解释“为什么这次带宽变了”，不是直接指定算法和协议。需要注意版本门槛：NCCL 2.28+ 才支持 tuning 报告，完整的对称 collective 标识和 kernel variant 信息需要更高版本；开启时源码还可能把 <code>NCCL_PROFILER_PLUGIN</code> 调整为 <code>STATIC_PLUGIN</code>。</p>
+<p>UI 建议：把它做成“记录 NCCL 实现选择”开关。报告页提供按消息大小展开的 tuning 列，并支持比较两次任务的 algorithm/protocol/kernel 差异。</p>
+<h2>6. <code>-R/-D/-V/-H</code> 为什么要动态显示</h2>
+<p>这些选项改变的是 NCCL buffer/collective 的底层实现，不是所有测试都适用，也不是所有安装环境都支持。</p>
+<table>
+<thead>
+<tr>
+  <th>参数</th>
+  <th>作用</th>
+  <th>适用范围/限制</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+  <td><code>-R 0/1/2</code></td>
+  <td>不注册、local registration、symmetric registration</td>
+  <td>NCCL 版本有门槛；<code>-D</code> 和 <code>-H</code> 都要求 <code>-R 2</code></td>
+</tr>
+<tr>
+  <td><code>-D N</code></td>
+  <td>选择 device API collective 实现</td>
+  <td>当前源码说明并非每个 collective 都有，主要是 AllReduce、AlltoAll 等；要求 NCCL 2.28+ 和 <code>-R 2</code></td>
+</tr>
+<tr>
+  <td><code>-V N</code></td>
+  <td>Device API 使用的 CTA 数</td>
+  <td>只在 device implementation 生效；必须为合法正数，并受 binary 校验</td>
+</tr>
+<tr>
+  <td><code>-H N</code></td>
+  <td>使用 Host RMA，配置 RMA context 数</td>
+  <td>支持 SendRecv、AlltoAll、AllGather、Broadcast、Gather、Scatter；要求 <code>-R 2</code>，与 <code>-D</code> 互斥；多 context 需要更高 NCCL 版本</td>
+</tr>
+</tbody>
+</table>
+<h3>6.1 动态显示的判断条件</h3>
+<p>页面加载或选择测试时，后端应综合四类能力：</p>
+<ol>
+<li><strong>构建能力</strong>：binary 是否 MPI build，是否编译进对应实现；</li>
+<li><strong>NCCL 版本</strong>：通过 <code>ncclGetVersion</code> 或启动探测获得实际运行库版本；</li>
+<li><strong>测试类型</strong>：当前 adapter 是否实现 Device API 或 Host RMA 路径；</li>
+<li><strong>硬件与内存能力</strong>：GPU 架构、P2P、对称内存注册等是否满足要求。</li>
+</ol>
+<p>不能只根据页面下拉框静态决定“支持/不支持”。例如 AllReduce 可以显示 <code>-D</code>，AllGather 可能只显示 <code>-H</code>，SendRecv 可能显示 Host RMA；如果目标节点 NCCL 版本过低，则这些控件应隐藏或置灰并说明原因。</p>
+<h3>6.2 依赖和互斥校验</h3>
+<p>最少实现以下规则：</p>
+<pre><code class="language-text">-D &gt; 0  =&gt; -R = 2
+-H &gt; 0  =&gt; -R = 2
+-D &gt; 0  与 -H &gt; 0  互斥
+-H &gt; 1  =&gt; NCCL &gt;= 2.31（按当前源码要求）
+-D/-V  =&gt; 当前测试必须声明支持 device implementation
+-H     =&gt; 当前测试必须声明支持 host RMA
+</code></pre>
+<p>命令预览不应只在最后拼接参数，而应显示一条能力说明，例如：</p>
+<pre><code class="language-text">已启用 Device API implementation=1，原因：AllReduce 支持，NCCL 版本满足，symmetric registration 已开启。
+</code></pre>
+<p>或者：</p>
+<pre><code class="language-text">-H 不可用：当前选择的 Reduce adapter 没有 Host RMA 实现。
+</code></pre>
+<h2>7. 推荐的页面组织</h2>
+<h3>基础配置</h3>
+<p>保留当前页面中的 collective、数据类型、op、消息范围、<code>-t/-g</code>、warmup/iters/check 等常用字段。</p>
+<h3>拓扑与复现</h3>
+<p>新增：节点列表/hostfile、MPI launcher 参数、每节点进程数、CPU/NUMA 绑定、GPU 映射策略、<code>CUDA_VISIBLE_DEVICES</code>、<code>NCCL_TESTS_DEVICE</code>、NCCL 环境变量。</p>
+<h3>高级执行与诊断</h3>
+<p>新增：<code>-M/-S/-u/-U/-T/-K/-z/-p/-y</code>，并显示依赖和冲突状态。</p>
+<h3>实现模式</h3>
+<p>仅在能力探测后显示：<code>-R/-D/-V/-H</code>。把“支持原因、版本门槛、互斥条件、实际展开命令”同时呈现出来。</p>
+<h3>报告</h3>
+<p>保存完整复现包：</p>
+<pre><code class="language-text">任务配置 JSON
+完整 launcher 命令
+nccl-tests binary 与版本
+NCCL/CUDA/MPI 版本
+节点、hostname、PID
+MPI rank/local rank/NCCL group/rank
+CUDA device、PCI bus、GPU 型号
+环境变量
+诊断开关
+每个消息规模的结果和 tuning 信息
+</code></pre>
+<p>这样报告才可以回答“结果是多少”和“这个结果是在什么拓扑、什么实现、什么诊断条件下得到的”。</p>
+<h2>关键源码位置</h2>
+<ul>
+<li><code>src/common.cu</code>：命令行解析、<code>-R/-D/-V/-H</code> 依赖与互斥、split、默认 GPU 分配、版本检查。</li>
+<li><code>src/util.cu</code>：JSON 初始化、设备/rank 报告、<code>-S</code> 输出、<code>-U</code> tuning 字段、内存报告调用。</li>
+<li><code>README.md</code>：MPI rank 公式、split 语法、参数说明和支持范围。</li>
+</ul>
+</article></main></body></html>

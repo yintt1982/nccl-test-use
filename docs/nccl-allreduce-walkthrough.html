@@ -1,0 +1,65 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="description" content="从一条命令理解 nccl-tests 的 AllReduce 主流程">
+<title>从一条命令理解 nccl-tests 的 AllReduce 主流程 | nccl-tests ????</title>
+<style>
+:root{color-scheme:light;--ink:#17212b;--muted:#5b6775;--line:#d8e0e8;--paper:#fff;--canvas:#f3f6f9;--accent:#1769aa;--code:#f1f4f7}
+*{box-sizing:border-box}body{margin:0;background:var(--canvas);color:var(--ink);font:16px/1.72 system-ui,-apple-system,"Segoe UI",sans-serif}
+header{background:#102a43;color:#fff;padding:18px max(24px,calc((100vw - 1120px)/2));display:flex;justify-content:space-between;align-items:center;gap:16px}
+header strong{font-size:15px;letter-spacing:.02em}header a{color:#cfe8ff;text-decoration:none;font-size:14px}
+main{max-width:1120px;margin:32px auto;padding:44px 56px;background:var(--paper);border:1px solid var(--line);border-radius:12px;box-shadow:0 8px 30px #19324b0c}
+article{max-width:900px;margin:auto}h1,h2,h3,h4{line-height:1.3;color:#102a43}h1{font-size:2.15rem;margin:0 0 1.4rem;padding-bottom:1rem;border-bottom:1px solid var(--line)}h2{font-size:1.55rem;margin-top:2.2rem;padding-bottom:.4rem;border-bottom:1px solid var(--line)}h3{font-size:1.2rem;margin-top:1.8rem}a{color:var(--accent);text-underline-offset:3px}p,ul,ol{margin:.85rem 0}li{padding-left:.2rem;margin:.25rem 0}blockquote{margin:1.2rem 0;padding:.2rem 1rem;border-left:4px solid #77a9d3;color:var(--muted);background:#f6f9fc}code{font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-size:.9em;background:var(--code);padding:.12em .35em;border-radius:4px}pre{overflow:auto;padding:18px;background:#101820;color:#e8eef4;border-radius:8px;line-height:1.55}pre code{background:transparent;padding:0;color:inherit}table{border-collapse:collapse;width:100%;display:block;overflow-x:auto;margin:1.2rem 0;font-size:.94rem}th,td{border:1px solid var(--line);padding:9px 12px;text-align:left;vertical-align:top}th{background:#edf3f8;color:#15334d}hr{border:0;border-top:1px solid var(--line);margin:2rem 0}img{max-width:100%;height:auto}footer{max-width:1120px;margin:0 auto 30px;padding:0 16px;text-align:center;color:var(--muted);font-size:13px}
+@media(max-width:720px){main{margin:12px;padding:26px 20px;border-radius:8px}header{padding:14px 20px}h1{font-size:1.7rem}body{font-size:15px}}
+</style>
+</head>
+<body>
+<header><strong>nccl-tests ????</strong><a href="nccl-allreduce-walkthrough.md">?? Markdown ???</a></header>
+<main><article>
+<h1>从一条命令理解 nccl-tests 的 AllReduce 主流程</h1>
+<p>研究日期：2026-10-26。源码基线：<code>E:/dpi/nccl-tests-master</code>，与上游 master <code>afd59abab774a6a4b492eb344bd0c845a0b7bb4d</code> 的 79 个文件逐一校验一致。本笔记是静态源码走读，不是 GPU 实测报告。源码行号相对该目录。</p>
+<h2>1. 示例命令与假设</h2>
+<pre><code class="language-bash">./build/all_reduce_perf -b 8 -e 8 -g 2 -d float -o sum -w 1 -n 2 -c 1 -J allreduce.json
+</code></pre>
+<p>假设这是非 MPI 构建，单机至少有两张可见 GPU，且没有通过 <code>NCCL_TESTS_DEVICE</code> 改变起始设备。该命令使用两张 GPU、每卡一个 NCCL rank，对 8 字节的 float 数组做 Sum AllReduce。它只跑一个数据规模；每种缓冲区模式做 1 次预热、2 次计时迭代，并在计时之后独立做 1 次正确性检查。框架分别测 out-of-place 与 in-place。</p>
+<p>本文不填造硬件实测的性能数值。公式示例只用符号或明确标注的假设时间。</p>
+<h2>2. 参数进入程序</h2>
+<p><code>main()</code> 用 getopt 解析参数：<code>-b/-e</code> 进入 <code>minBytes/maxBytes</code>，<code>-g</code> 设置每线程 GPU 数，<code>-d/-o</code> 解析成 NCCL datatype/reduction op，<code>-w/-n/-c</code> 分别设置 warmup、计时迭代、检查迭代；<code>-J</code> 选择 JSON 输出。默认还有 <code>nThreads=1</code>、step factor 关闭、datacheck=1、average=1。<a href="../nccl-tests-master/src/common.cu#L1247">参数解析</a></p>
+<p>因 <code>minBytes=maxBytes=8</code>，<code>TimeTest()</code> 的循环只测 8 字节一个点。<code>AllReduceRunTest()</code> 将数据类型和规约操作设为单值并调用 <code>TimeTest()</code>。<a href="../nccl-tests-master/src/all_reduce.cu#L545">AllReduce 测试入口</a> <a href="../nccl-tests-master/src/common.cu#L942">公共大小扫描</a></p>
+<h2>3. GPU、进程与 rank</h2>
+<p>非 MPI 时只有一个进程；默认一个线程；<code>-g 2</code> 表示每线程使用两张 GPU，因此 communicator 有两个 NCCL rank。默认可见设备从 GPU 0 开始时，GPU 0、1 分别对应 rank 0、1。代码中 rank 计算为 <code>((proc*nThreads + thread)*nGpus + i)</code>。<a href="../nccl-tests-master/src/common.cu#L1660">GPU 选择</a> <a href="../nccl-tests-master/src/common.cu#L568">rank 公式</a></p>
+<p><code>initComms()</code> 为每张 GPU 建立对应 communicator；单线程管理多 GPU 时，发起 collective 的位置用 <code>ncclGroupStart/End</code> 包围。MPI 多进程场景才额外使用 MPI 广播 unique ID、协调进程；被测 AllReduce 调用仍通过 NCCL。<a href="../nccl-tests-master/src/common.cu#L200">communicator 初始化</a> <a href="../nccl-tests-master/src/common.cu#L1570">MPI ID 广播和分组</a></p>
+<h2>4. 从 8 字节到 NCCL 调用</h2>
+<p>float 每元素 4 字节，所以每 rank 的元素数 <code>count=8/4=2</code>。AllReduce 的发送和接收元素数都等于 count，in-place 偏移为 0。<a href="../nccl-tests-master/src/all_reduce.cu#L34">AllReduce 数据量规则</a> <code>setupArgs()</code> 将元素数乘元素大小，得到发送和预期输出缓冲区的字节数。<a href="../nccl-tests-master/src/common.cu#L928">字节数换算</a></p>
+<p>out-of-place 时从独立 send buffer 读、写入 recv buffer。in-place 时输入和输出都使用 recv buffer。默认 <code>deviceImpl=0</code> 时，适配器调用 <code>ncclAllReduce(send, recv, count, type, op, comm, stream)</code>；显式启用其他实现时会走不同路径。<a href="../nccl-tests-master/src/common.cu#L554">调用分发</a> <a href="../nccl-tests-master/src/all_reduce.cu#L500">AllReduce 实现</a></p>
+<p>两个 rank 的每个位置都得到两张 GPU 输入值的和，且输出相同。报告中的 <code>size=8</code> 是每 rank 的逻辑输入消息大小，不是所有 rank 传输字节数之和。<a href="https://docs.nvidia.com/deeplearning/nccl/user-guide/docs/usage/operations.html">NCCL 操作语义</a></p>
+<h2>5. 计时与正确性检查</h2>
+<p>每种缓冲区模式先初始化（开启校验时），执行 warmup，然后同步。接着每个外层迭代发起一次 collective；本例 agg_iters 默认 1，故有两次计时迭代。框架等待 stream 完成，再计算每次 operation 的平均时间。默认不启用逐次 CUDA event 统计。<a href="../nccl-tests-master/src/common.cu#L720">预热与计时</a></p>
+<p>计时结束后，框架重新初始化数据，再执行单次 collective 并比较实际结果和预期结果。<code>-c 1</code> 是这项独立正确性检查的重复数，不是对两次计时迭代逐一检查。输入和 expected 根据数据类型、规约操作、rank 数和 seed 构造；错误结果累计为错误元素数。<a href="../nccl-tests-master/src/all_reduce.cu#L42">输入初始化</a> <a href="../nccl-tests-master/src/common.cu#L831">计时后验证</a> <a href="../nccl-tests-master/verifiable/verifiable.h#L37">verifiable 接口</a></p>
+<h2>6. time、algbw、busbw</h2>
+<p>AllReduce 的逻辑消息大小 S=8 bytes。若平均操作时间为 t 秒：</p>
+<pre><code class="language-text">algbw = S / t / 1e9                         (GB/s)
+busbw = algbw × 2 × (nRanks - 1) / nRanks   (GB/s)
+</code></pre>
+<p>本例 nRanks=2，修正因子为 1，所以 busbw 等于 algbw。仅作公式演算：若假设 t=1 微秒，则 algbw=0.008 GB/s。该值是算例，不是本机实测。若 rank 数为 8，修正因子为 1.75。busbw 是按 collective 通信模型修正的算法带宽，不是 NIC 计数器测得的吞吐。<a href="../nccl-tests-master/src/all_reduce.cu#L59">AllReduce 带宽实现</a> <a href="../nccl-tests-master/doc/PERFORMANCE.md#L33">AllReduce 公式</a></p>
+<p><strong>单位差异：</strong> 该源码实现把秒乘 <code>1e6</code> 输出 time，JSON 字段是 <code>time</code> 或 <code>cpu_time</code>，值的单位为微秒；迭代数据字段也带 <code>_us</code>。仓库性能文档第 3 行写毫秒，与实现不一致。解析或展示该版本数据时应按源码实现与 JSON 字段约定处理，并显式标注微秒。<a href="../nccl-tests-master/src/common.cu#L886">时间换算</a> <a href="../nccl-tests-master/src/util.cu#L594">结果字段</a> <a href="../nccl-tests-master/src/util.cu#L668">迭代字段</a></p>
+<p>文本结果前缀含 <code>size/count/type/redop/root</code>，主体含 <code>time/algbw/busbw/#wrong</code>。AllReduce 的 root 不适用，但通用输出仍打印默认 root=0。JSON 的每条记录分别含 <code>out_of_place</code>、<code>in_place</code> 两种结果对象，内有 time、alg_bw、bus_bw 和 nwrong；顶层记录版本、argv、环境变量、NCCL 版本、设备信息等复现元数据。<a href="../nccl-tests-master/src/util.cu#L501">结果前缀与字段</a> <a href="../nccl-tests-master/src/util.cu#L364">JSON 元数据</a></p>
+<h2>7. 容易误读的地方</h2>
+<ul>
+<li>一个 MPI 进程可以管理多个 NCCL rank；本例是一个进程、两张 GPU、两个 rank。</li>
+<li>size 是每 rank 的逻辑消息大小；float 的 count 是元素个数，本例为 2。</li>
+<li>busbw 是推导指标，不是 NIC 实测流量。</li>
+<li><code>-n 2</code> 是计时迭代数；<code>-c 1</code> 是计时后校验重复数。</li>
+<li>AllReduce 会分别报告 out-of-place 和 in-place；不是所有 collective 都支持 in-place。</li>
+<li>本版本的 time 实现单位为微秒，不能照搬性能文档开头的毫秒描述。</li>
+<li>显存不足时程序可能下调 maxBytes，需看实际输出和 JSON，而不只看请求参数。<a href="../nccl-tests-master/src/common.cu#L1628">内存约束</a></li>
+</ul>
+<h2>8. 后续阅读</h2>
+<p>下一步沿 <code>AllReduceInitData → ncclVerifiablePrepareInput/PrepareExpected → ncclVerifiableVerify</code> 阅读输入模式与 expected 的构造；再比较 AllGather、ReduceScatter、Broadcast 的 count、缓冲区布局和 bus bandwidth 因子。随后追踪 <code>-I 1</code> 的逐迭代 JSON，以及 CUDA Graph / blocking 参数对测量口径的影响。当前阶段仍专注理解 nccl-tests，不进入 Keysight 界面原型。</p>
+
+</article></main>
+<footer>? nccl-allreduce-walkthrough.md ???? ? ??????????????????</footer>
+</body>
+</html>

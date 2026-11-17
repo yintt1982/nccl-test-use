@@ -1,0 +1,191 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="description" content="nccl-tests 源码研究地图与覆盖状态">
+<title>nccl-tests 源码研究地图与覆盖状态 | nccl-tests ????</title>
+<style>
+:root{color-scheme:light;--ink:#17212b;--muted:#5b6775;--line:#d8e0e8;--paper:#fff;--canvas:#f3f6f9;--accent:#1769aa;--code:#f1f4f7}
+*{box-sizing:border-box}body{margin:0;background:var(--canvas);color:var(--ink);font:16px/1.72 system-ui,-apple-system,"Segoe UI",sans-serif}
+header{background:#102a43;color:#fff;padding:18px max(24px,calc((100vw - 1120px)/2));display:flex;justify-content:space-between;align-items:center;gap:16px}
+header strong{font-size:15px;letter-spacing:.02em}header a{color:#cfe8ff;text-decoration:none;font-size:14px}
+main{max-width:1120px;margin:32px auto;padding:44px 56px;background:var(--paper);border:1px solid var(--line);border-radius:12px;box-shadow:0 8px 30px #19324b0c}
+article{max-width:900px;margin:auto}h1,h2,h3,h4{line-height:1.3;color:#102a43}h1{font-size:2.15rem;margin:0 0 1.4rem;padding-bottom:1rem;border-bottom:1px solid var(--line)}h2{font-size:1.55rem;margin-top:2.2rem;padding-bottom:.4rem;border-bottom:1px solid var(--line)}h3{font-size:1.2rem;margin-top:1.8rem}a{color:var(--accent);text-underline-offset:3px}p,ul,ol{margin:.85rem 0}li{padding-left:.2rem;margin:.25rem 0}blockquote{margin:1.2rem 0;padding:.2rem 1rem;border-left:4px solid #77a9d3;color:var(--muted);background:#f6f9fc}code{font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-size:.9em;background:var(--code);padding:.12em .35em;border-radius:4px}pre{overflow:auto;padding:18px;background:#101820;color:#e8eef4;border-radius:8px;line-height:1.55}pre code{background:transparent;padding:0;color:inherit}table{border-collapse:collapse;width:100%;display:block;overflow-x:auto;margin:1.2rem 0;font-size:.94rem}th,td{border:1px solid var(--line);padding:9px 12px;text-align:left;vertical-align:top}th{background:#edf3f8;color:#15334d}hr{border:0;border-top:1px solid var(--line);margin:2rem 0}img{max-width:100%;height:auto}footer{max-width:1120px;margin:0 auto 30px;padding:0 16px;text-align:center;color:var(--muted);font-size:13px}
+@media(max-width:720px){main{margin:12px;padding:26px 20px;border-radius:8px}header{padding:14px 20px}h1{font-size:1.7rem}body{font-size:15px}}
+</style>
+</head>
+<body>
+<header><strong>nccl-tests ????</strong><a href="nccl-tests-study-map.md">?? Markdown ???</a></header>
+<main><article>
+<h1>nccl-tests 源码研究地图与覆盖状态</h1>
+<p>更新日期：2026-10-26。当前阶段目标是先掌握 nccl-tests 的功能、参数、执行与报告语义，再进入 Keysight AI DC Builder 录屏对照和 UI 原型。本文件用于导航已有研究结论、标记研究边界。</p>
+<h2>研究层次</h2>
+<table>
+<thead>
+<tr>
+<th>层次</th>
+<th>要回答的问题</th>
+<th>当前资料</th>
+<th>状态</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>1. 仓库与程序结构</td>
+<td>有哪些测试程序、入口和公共框架？</td>
+<td><a href="nccl-tests-architecture.html">整体架构</a></td>
+<td>已建立</td>
+</tr>
+<tr>
+<td>2. 单个测试的执行主链</td>
+<td>命令行怎样走到 AllReduce NCCL 调用？</td>
+<td><a href="nccl-allreduce-walkthrough.html">AllReduce 执行走读</a></td>
+<td>已跟读静态源码</td>
+</tr>
+<tr>
+<td>3. Collective 语义与 buffer 布局</td>
+<td>每 rank 输入/输出什么、count 和消息字节如何变化？</td>
+<td><a href="nccl-validation-layout-research.html">校验与布局</a>、<a href="nccl-adapter-deep-dive.html">adapter 深入走读</a></td>
+<td>11 类常规测试已覆盖源码层</td>
+</tr>
+<tr>
+<td>4. 正确性校验</td>
+<td>输入/expected 如何生成，错误数和容差是什么意思？</td>
+<td><a href="nccl-validation-layout-research.html">校验与布局</a>、<a href="nccl-collectives-metrics-research.html">指标与验证</a></td>
+<td>已覆盖主要机制；未硬件实测</td>
+</tr>
+<tr>
+<td>5. 性能指标</td>
+<td>time/algbw/busbw 的公式、单位和口径是什么？</td>
+<td><a href="nccl-collectives-metrics-research.html">指标与验证</a>、<a href="nccl-adapter-deep-dive.html">adapter 深入走读</a></td>
+<td>已覆盖常规口径；busbw 是派生指标</td>
+</tr>
+<tr>
+<td>6. 计时与运行参数</td>
+<td>warmup、迭代、聚合、blocking、graph、rank 聚合如何影响结果？</td>
+<td><a href="nccl-report-and-timing-research.html">计时与 JSON 报告</a>、<a href="nccl-mpi-rank-mapping.html">MPI rank 映射</a></td>
+<td>已覆盖静态语义</td>
+</tr>
+<tr>
+<td>7. 结果报告</td>
+<td>stdout/JSON 有什么字段，如何保留配置和证据？</td>
+<td><a href="nccl-report-and-timing-research.html">计时与 JSON 报告</a></td>
+<td>已覆盖当前 schema</td>
+</tr>
+<tr>
+<td>8. NCCL 内部执行</td>
+<td>NCCL 如何选算法/协议、走 NVLink/网络传输？</td>
+<td>上游 NCCL 源码尚未系统追踪</td>
+<td>未开始；不能从测试 adapter 推断</td>
+</tr>
+<tr>
+<td>9. 实机环境行为</td>
+<td>编译/运行、多机 rank 映射、不同 GPU/NIC 下结果如何？</td>
+<td>需 GPU、CUDA、NCCL、MPI 环境</td>
+<td>未验证</td>
+</tr>
+<tr>
+<td>10. Keysight 网管体验</td>
+<td>Keysight 录屏里的页面、流程、信息架构如何映射？</td>
+<td>用户提供的两份录屏</td>
+<td>按用户要求暂缓，等 nccl-tests 阶段完成</td>
+</tr>
+</tbody>
+</table>
+<h2>11 类测试覆盖</h2>
+<table>
+<thead>
+<tr>
+<th>测试</th>
+<th>语义/源码路径</th>
+<th>数据校验关注点</th>
+<th>现阶段结论</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>AllReduce</td>
+<td>全 rank 同索引规约后复制给所有 rank</td>
+<td>expected 独立规约；Average 有特定 ULP 容差</td>
+<td>已深入主链</td>
+</tr>
+<tr>
+<td>AllGather</td>
+<td>各 rank 输入块按 rank 拼接并广播到全体</td>
+<td>count 是单 rank chunk；接收长度乘 rank 数</td>
+<td>已研究</td>
+</tr>
+<tr>
+<td>ReduceScatter</td>
+<td>规约后按块分发</td>
+<td>API 输入与带宽分子区分</td>
+<td>已研究</td>
+</tr>
+<tr>
+<td>Broadcast</td>
+<td>root 输入复制到各 rank</td>
+<td>root 与非 root 输入角色不同</td>
+<td>已研究</td>
+</tr>
+<tr>
+<td>Reduce</td>
+<td>所有 rank 输入，结果只在 root</td>
+<td>root / 非 root expected 语义</td>
+<td>结构与指标已覆盖，建议补 root 校验细读</td>
+</tr>
+<tr>
+<td>AlltoAll</td>
+<td>每个 rank 向每个 peer 发等长块</td>
+<td>in-place 路径不支持且不报告错误</td>
+<td>已研究</td>
+</tr>
+<tr>
+<td>AlltoAllv</td>
+<td>peer 间不同长度，支持生成流量或矩阵</td>
+<td>in-place 不支持；最大工作量和最长 rank 时间口径</td>
+<td>已研究</td>
+</tr>
+<tr>
+<td>Gather</td>
+<td>所有 rank 的块汇总到 root</td>
+<td>root receive buffer 含全 rank 块</td>
+<td>已研究</td>
+</tr>
+<tr>
+<td>Scatter</td>
+<td>root 大数组分块发给各 rank</td>
+<td>各 rank expected 是自己的分片</td>
+<td>已研究</td>
+</tr>
+<tr>
+<td>SendRecv</td>
+<td>rank 环：发给 next、从 previous 收</td>
+<td>in-place 不支持且不报告错误</td>
+<td>已研究</td>
+</tr>
+<tr>
+<td>HyperCube</td>
+<td>自定义 Send/Recv 倍增交换，完成 AllGather 布局</td>
+<td>rank 数非 2 的幂时跳过</td>
+<td>已研究</td>
+</tr>
+</tbody>
+</table>
+<p>源码覆盖指理解 adapter 的静态结构，不等同所有版本分支、所有 datatype/op、所有配置组合都已运行验证。</p>
+<h2>需要完成的研究闭环</h2>
+<ol>
+<li><strong>命令行参数矩阵</strong>：将 README 所有参数按资源拓扑、消息扫描、校验、计时、实现后端、报告分类；注明组合限制和各自改变的测量语义。</li>
+<li><strong>MPI 多机映射</strong>：已完成静态跟读，见 <a href="nccl-mpi-rank-mapping.html">rank 映射笔记</a>；仍需不同 launcher 的多机实测。</li>
+<li><strong>Reduce 校验细节与异常行为</strong>：补 root-only 输出的错误检查解释；区分跳过、不支持、校验关闭和通过。</li>
+<li><strong>NCCL 库源码层（按需）</strong>：如果管理界面要呈现 tuning/算法选择，结合 <code>-U</code> profiler 字段与对应 NCCL 代码/文档，追踪字段的来源、可用版本和缺失原因。</li>
+<li><strong>GPU 实验计划</strong>：至少覆盖单机双 GPU、多 GPU，AllReduce 与 AllGather/ReduceScatter，校验开关，JSON/per-iter，AlltoAllv 不均衡矩阵；记录硬件、驱动、CUDA/NCCL、命令、原始日志和 JSON。没有这些环境时只标静态结论，不虚构性能值。</li>
+<li><strong>阶段完成判定</strong>：源码研究笔记、参数/输出字段表、错误/skip 状态解释和实测缺口整理完成后，再开始观看 Keysight 录屏并提取页面及流程需求。</li>
+</ol>
+<h2>源码基线说明</h2>
+<p>研究基于本地 <code>nccl-tests-master</code>。上游核验记录在 <a href="nccl-source-verification.json">源码核验 JSON</a>；结论仍应与实际部署使用的 tag/commit 再核对。到目前为止没有声称已编译或运行 GPU benchmark。</p>
+
+</article></main>
+<footer>? nccl-tests-study-map.md ???? ? ??????????????????</footer>
+</body>
+</html>

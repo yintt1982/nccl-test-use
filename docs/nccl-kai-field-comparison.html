@@ -1,0 +1,284 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="description" content="nccl-tests 涓?Keysight KAI config/report 鎸囨爣瀛楁瀵规瘮">
+<title>nccl-tests 涓?Keysight KAI config/report 鎸囨爣瀛楁瀵规瘮 | nccl-tests ????</title>
+<style>
+:root{color-scheme:light;--ink:#17212b;--muted:#5b6775;--line:#d8e0e8;--paper:#fff;--canvas:#f3f6f9;--accent:#1769aa;--code:#f1f4f7}
+*{box-sizing:border-box}body{margin:0;background:var(--canvas);color:var(--ink);font:16px/1.72 system-ui,-apple-system,"Segoe UI",sans-serif}
+header{background:#102a43;color:#fff;padding:18px max(24px,calc((100vw - 1120px)/2));display:flex;justify-content:space-between;align-items:center;gap:16px}
+header strong{font-size:15px;letter-spacing:.02em}header a{color:#cfe8ff;text-decoration:none;font-size:14px}
+main{max-width:1120px;margin:32px auto;padding:44px 56px;background:var(--paper);border:1px solid var(--line);border-radius:12px;box-shadow:0 8px 30px #19324b0c}
+article{max-width:900px;margin:auto}h1,h2,h3,h4{line-height:1.3;color:#102a43}h1{font-size:2.15rem;margin:0 0 1.4rem;padding-bottom:1rem;border-bottom:1px solid var(--line)}h2{font-size:1.55rem;margin-top:2.2rem;padding-bottom:.4rem;border-bottom:1px solid var(--line)}h3{font-size:1.2rem;margin-top:1.8rem}a{color:var(--accent);text-underline-offset:3px}p,ul,ol{margin:.85rem 0}li{padding-left:.2rem;margin:.25rem 0}blockquote{margin:1.2rem 0;padding:.2rem 1rem;border-left:4px solid #77a9d3;color:var(--muted);background:#f6f9fc}code{font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-size:.9em;background:var(--code);padding:.12em .35em;border-radius:4px}pre{overflow:auto;padding:18px;background:#101820;color:#e8eef4;border-radius:8px;line-height:1.55}pre code{background:transparent;padding:0;color:inherit}table{border-collapse:collapse;width:100%;display:block;overflow-x:auto;margin:1.2rem 0;font-size:.94rem}th,td{border:1px solid var(--line);padding:9px 12px;text-align:left;vertical-align:top}th{background:#edf3f8;color:#15334d}hr{border:0;border-top:1px solid var(--line);margin:2rem 0}img{max-width:100%;height:auto}footer{max-width:1120px;margin:0 auto 30px;padding:0 16px;text-align:center;color:var(--muted);font-size:13px}
+@media(max-width:720px){main{margin:12px;padding:26px 20px;border-radius:8px}header{padding:14px 20px}h1{font-size:1.7rem}body{font-size:15px}}
+</style>
+</head>
+<body>
+<header><strong>nccl-tests ????</strong><a href="nccl-kai-field-comparison.md">?? Markdown ???</a></header>
+<main><article>
+<h1>nccl-tests 涓?Keysight KAI config/report 鎸囨爣瀛楁瀵规瘮</h1>
+<p>鏃ユ湡锛?026-10-25</p>
+<h2>1. 鑼冨洿涓庡師濮嬫潵婧?</h2>
+<p>鏈姤鍛婂彧浣跨敤鏈湴涓€鎵嬫枃浠讹細</p>
+<ul>
+<li>NCCL-tests 婧愮爜锛歚E:\dpi\nccl-tests-master\README.md<code>銆乣doc\PERFORMANCE.md</code>銆?- KAI 鏍锋湰閰嶇疆锛歚D:\宸ュ叿寮€鍙慭鍚岃\KAI鎴浘鍜屽綍灞廫config&amp;results\trial_result_0e65a20d-3caa-4d31-a795-f2044fb9348d-1\trial_results_2026-10-21_07_59_12\result\2026-10-21\07-33-43_0e65a20d-3caa-4d31-a795-f2044fb9348d\trial.yaml<code>銆?- KAI 鏍锋湰缁撴灉锛氬悓鐩綍 </code>csv\summary.csv<code>銆乣iteration_metric.csv</code>銆乣interval_metrics.csv<code>銆乣port_metrics.csv</code>銆乣qp_metrics.csv<code>銆乣flow_metrics.csv</code> 鍙婂搴?Feather/meta 鏂囦欢銆?
+NCCL-tests 鏈韩涓嶆槸涓€涓浐瀹?YAML 閰嶇疆鏍煎紡鐨勬祴璇曞钩鍙般€傚畠閫氳繃鍛戒护琛屽弬鏁板拰 NCCL 鐜鍙橀噺閰嶇疆锛屾枃鏈〃鏍兼垨 <code>-J</code> JSON 杈撳嚭鎶ュ憡銆侹AI 鍒欎繚瀛樹簡鎷撴墤銆佷华琛ㄧ鍙ｃ€丷oCE銆佹嫢濉炴帶鍒躲€侀泦鍚堥€氫俊绠楁硶銆佹暟鎹妯″拰鏁呴殰娉ㄥ叆绛夊畬鏁?trial 閰嶇疆锛屽苟鎸夊涓娴嬪眰娆¤惤鐩樼粨鏋溿€?</li>
+</ul>
+<h2>2. NCCL-tests 鐨勯厤缃瓧娈?</h2>
+<p>渚濇嵁 README 鐨勫懡浠よ璇存槑锛屼富瑕侀厤缃淮搴﹀涓嬶細</p>
+<table>
+<thead>
+<tr>
+<th>閰嶇疆缁村害</th>
+<th>NCCL-tests 瀛楁/鍙傛暟</th>
+<th>鍚箟</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>娴嬭瘯绋嬪簭</td>
+<td><code>all_reduce_perf</code>銆乣all_gather_perf<code>銆乣broadcast_perf</code> 绛?</td>
+<td>閫夋嫨闆嗗悎閫氫俊鎿嶄綔</td>
+</tr>
+<tr>
+<td>鏁版嵁鑼冨洿</td>
+<td><code>-b/--minbytes</code>銆乣-e/--maxbytes<code>銆乣-i/--stepbytes</code>銆乣-f/--stepfactor`</td>
+<td>鏁版嵁閲忚捣鐐广€佺粓鐐瑰拰姝ヨ繘</td>
+</tr>
+<tr>
+<td>鏁版嵁绫诲瀷</td>
+<td><code>-d/--datatype</code></td>
+<td>Float銆丠alf銆両nt 绛?NCCL 鏁版嵁绫诲瀷</td>
+</tr>
+<tr>
+<td>鏍?rank</td>
+<td><code>-r/--root</code></td>
+<td>Broadcast/Reduce 绛夐渶瑕?root 鐨勬搷浣?</td>
+</tr>
+<tr>
+<td>rank/GPU 骞惰搴?</td>
+<td><code>-g/--ngpus</code>銆丮PI 杩涚▼鏁般€佺嚎绋嬫暟</td>
+<td>鍙備笌娴嬭瘯鐨?GPU/rank 鏁帮紱鎬?rank 鏄繘绋嬫暟脳绾跨▼鏁懊楁瘡绾跨▼ GPU 鏁?</td>
+</tr>
+<tr>
+<td>杩唬</td>
+<td><code>-n/--iters</code>銆乣-w/--warmup_iters<code>銆乣-m/--agg_iters</code>銆乣-N/--run_cycles`</td>
+<td>姝ｅ紡杩唬銆侀鐑€佽仛鍚堛€佸惊鐜鏁?</td>
+</tr>
+<tr>
+<td>姝ｇ‘鎬?</td>
+<td><code>-c/--check</code></td>
+<td>缁撴灉鏍￠獙杩唬娆℃暟</td>
+</tr>
+<tr>
+<td>杩愯琛屼负</td>
+<td><code>-p/--parallel_init</code>銆乣-C/--report_cputime<code>銆乣-G/--cudagraph</code>銆乣-T/--timeout`</td>
+<td>鍒濆鍖栥€佽鏃跺彛寰勩€丆UDA graph銆佽秴鏃?</td>
+</tr>
+<tr>
+<td>杈撳嚭</td>
+<td><code>-S/--report_timestamps</code>銆乣-J/--output_file<code>銆乣-U/--tuning</code></td>
+<td>鏃堕棿鎴炽€丣SON 鏂囦欢銆丯CCL tuning 淇℃伅</td>
+</tr>
+<tr>
+<td>閫氫俊閫夋嫨</td>
+<td><code>NCCL_ALGO</code>銆乣NCCL_PROTO<code>銆乣NCCL_TESTS_SPLIT</code> 绛夌幆澧冨彉閲?</td>
+<td>绠楁硶銆佸崗璁拰 rank 鍒嗙粍锛汵CCL 杩愯鏃跺彉閲忚繕褰卞搷瀹為檯璺緞</td>
+</tr>
+</tbody>
+</table>
+<p>NCCL-tests 鐨勯厤缃噸鐐规槸鈥滆繍琛屼竴娆￠泦鍚堥€氫俊鎬ц兘娴嬭瘯闇€瑕佸摢浜涘弬鏁扳€濓紝涓嶆弿杩颁氦鎹㈡満銆佺墿鐞嗙鍙ｃ€丯IC 鐨勯摼璺眰鍙傛暟锛屼篃娌℃湁 KAI 涓偅绉嶇嫭绔嬬殑浠〃缁戝畾妯″瀷銆?</p>
+<h2>3. NCCL-tests 鐨勬姤鍛婂瓧娈?</h2>
+<p>鏍囧噯鏂囨湰杈撳嚭鐨勬牳蹇冨垪涓猴細</p>
+<table>
+<thead>
+<tr>
+<th>NCCL-tests 瀛楁</th>
+<th>鍗曚綅/鍙ｅ緞</th>
+<th>璇存槑</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>size</code></td>
+<td>B</td>
+<td>鏈疆浼犺緭/鎿嶄綔鏁版嵁瑙勬ā</td>
+</tr>
+<tr>
+<td><code>count</code></td>
+<td>elements</td>
+<td>姣?rank 鐨勫厓绱犳暟閲?</td>
+</tr>
+<tr>
+<td><code>type</code></td>
+<td>-</td>
+<td>鏁版嵁绫诲瀷</td>
+</tr>
+<tr>
+<td><code>redop</code></td>
+<td>-</td>
+<td>瑙勭害鎿嶄綔锛屽 Sum</td>
+</tr>
+<tr>
+<td><code>root</code></td>
+<td>-</td>
+<td>root rank锛涙棤 root 鎿嶄綔閫氬父涓?<code>-</code></td>
+</tr>
+<tr>
+<td><code>time</code></td>
+<td>us 鎴?ms锛屾寜杈撳嚭琛ㄥご</td>
+<td>骞冲潎鎿嶄綔鏃堕棿锛沗doc/PERFORMANCE.md` 瑙ｉ噴鍏朵负骞冲潎 operation time</td>
+</tr>
+<tr>
+<td><code>algbw</code></td>
+<td>GB/s</td>
+<td>绠楁硶甯﹀锛宍S/t`</td>
+</tr>
+<tr>
+<td><code>busbw</code></td>
+<td>GB/s</td>
+<td>鎸夐泦鍚堥€氫俊娴侀噺鎶樼畻鐨勬€荤嚎甯﹀锛涗笉鍚?collective 鐨勬崲绠楃郴鏁颁笉鍚?</td>
+</tr>
+<tr>
+<td><code>#wrong</code></td>
+<td>count</td>
+<td>姝ｇ‘鎬ч敊璇暟锛涘簲涓?0</td>
+</tr>
+</tbody>
+</table>
+<p>杈撳嚭杩樺尯鍒?<code>out-of-place</code> 鍜?<code>in-place</code>銆俁EADME 璇存槑鍙互浣跨敤 <code>-J</code> 鐢熸垚 JSON锛涘洜姝や骇鍝佸寲鏃跺簲浼樺厛閲囬泦 JSON锛岃€屼笉鏄В鏋愬榻愭枃鏈€?
+<code>algbw</code> 鍜?KAI 鐨?<code>Algbw (GB/s)</code> 鍙互鐩存帴瀵归綈锛沗busbw<code> 鍜?KAI 鐨?</code>Busbw (GB/s)<code> 涔熷彲浠ョ洿鎺ュ榻愶紝浣嗗墠鎻愭槸 collective銆乺ank 鏁般€佹暟鎹妯″彛寰勪竴鑷淬€侼CCL 鏂囨。鏄庣‘璇存槑锛宍busbw</code> 鏄负浜嗗弽鏄犵‖浠跺埄鐢ㄦ晥鐜囪€屽紩鍏ョ殑鎸囨爣锛屼笉鑳芥妸瀹冨綋鎴愬師濮嬬嚎閫熴€?</p>
+<h2>4. KAI 閰嶇疆瀛楁锛坱rial.yaml锛?</h2>
+<p>KAI 鐨勯厤缃瘮 NCCL-tests 鏇存帴杩戔€滅綉缁滄祴璇曚华 + 琚祴绯荤粺鈥濈殑璇曢獙鎻忚堪锛屼富瑕佸瓧娈靛涓嬶細</p>
+<table>
+<thead>
+<tr>
+<th>KAI 閰嶇疆鍖?</th>
+<th>鍏抽敭瀛楁</th>
+<th>瀵瑰簲鍚箟</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>platform</code></td>
+<td><code>PLATFORM_KEYS_HW</code></td>
+<td>娴嬭瘯骞冲彴/浠〃绫诲瀷</td>
+</tr>
+<tr>
+<td><code>infrastructure.deviceInstances</code></td>
+<td><code>generic</code>銆乣blackbox_switch<code>銆乣count</code></td>
+<td>涓绘満銆佷氦鎹㈡満鍜屽疄渚嬫暟閲?</td>
+</tr>
+<tr>
+<td><code>physicalBindings</code></td>
+<td><code>chassisLocation.address</code>銆乣port<code>銆乣layer1.speedMode</code></td>
+<td>浠〃鏈虹 IP銆佺墿鐞嗙鍙ｃ€?00G NRZ/RS-FEC 閾捐矾妯″紡</td>
+</tr>
+<tr>
+<td><code>nicSettings</code></td>
+<td>MAC銆両Pv4銆丮TU銆乂LAN銆丵oS</td>
+<td>琚祴 NIC 鐨勪簩灞?涓夊眰璁剧疆</td>
+</tr>
+<tr>
+<td><code>roceTransportSettings</code></td>
+<td><code>ackDscp</code>銆乣dataDscp<code>銆乣nackDscp</code></td>
+<td>RoCE 娴侀噺 DSCP</td>
+</tr>
+<tr>
+<td><code>congestionControl</code></td>
+<td>ECN銆丳FC銆丏CQCN 鍙傛暟</td>
+<td>鎷ュ鎺у埗涓庢棤鎹熺綉缁滆缃?</td>
+</tr>
+<tr>
+<td><code>rankBindings</code></td>
+<td>rankId銆丯PU銆丯IC 寮曠敤</td>
+<td>rank 鍒?NIC/NPU 鐨勬嫇鎵戠粦瀹?</td>
+</tr>
+<tr>
+<td><code>kccb.benchmark</code></td>
+<td><code>collectiveAlgorithm.system</code>銆乣datasize.start/end/step<code>銆乣iterations</code>銆乣iterationAppendDelay`</td>
+<td>闆嗗悎閫氫俊绠楁硶銆佹暟鎹寖鍥淬€佽凯浠ｅ拰棰濆寤惰繜</td>
+</tr>
+<tr>
+<td><code>rocev2</code></td>
+<td>QP 鏁般€佹秷鎭ぇ灏忋€侀噸浼犮€丷NR銆乿erb</td>
+<td>RoCEv2 浼犺緭琛屼负</td>
+</tr>
+<tr>
+<td><code>impairments</code></td>
+<td>packetDrop銆乸acketReorder</td>
+<td>涓㈠寘銆佷贡搴忕瓑鏁呴殰娉ㄥ叆</td>
+</tr>
+<tr>
+<td><code>infrastructureProfile</code></td>
+<td>host 鏁般€丯PU 鏁般€佸甫瀹?</td>
+<td>娴嬭瘯鎷撴墤鑳藉姏妯″瀷</td>
+</tr>
+</tbody>
+</table>
+<p>鏍锋湰閰嶇疆鏄?2 涓?host銆佹瘡涓?1 涓?NPU/NIC锛屼氦鎹㈡満绔彛涓?<code>10.11.58.151:1.1</code> 鍜?<code>3.1</code>锛?00G 閾捐矾锛岄泦鍚堢畻娉曚负 <code>ALGO_ALL_GATHER_RING</code>锛屾暟鎹粠 128 MiB 鍒?4 GiB銆佹寜 2 鍊嶉€掑锛岃凯浠ｆ暟涓?1锛涘悓鏃跺惎鐢ㄤ簡 PFC锛岄厤缃簡 packet drop/reorder impairment銆?</p>
+<h2>5. KAI 鎶ュ憡瀛楁</h2>
+<h3>5.1 summary.csv锛氫富缁撴灉灞?</h3>
+<p>瀛楁锛歚Total Bytes Tx<code>銆乣Total Bytes Rx</code>銆乣Iterations<code>銆乣Collective Time (ms)</code>銆乣Algbw (GB/s)<code>銆乣Busbw (GB/s)</code>銆乣Ideal (%)<code>銆乣PFC Rx</code>銆乣ECN CE Rx<code>銆乣Frames ReTx</code>銆乣Total Time (s)<code>銆乣Duty Cycle (%)</code>銆乣CNP Tx<code>銆乣CNP Rx</code>銆乣Data size (B)<code>銆乣Collective</code>銆?
+杩欐槸鏈€閫傚悎鍜?NCCL-tests 涓绘姤鍛婄洿鎺ュ姣旂殑涓€灞傦細</p>
+<ul>
+<li><code>Data size (B)</code> 瀵?<code>size</code>锛?- <code>Collective Time (ms)</code> 瀵?<code>time</code>锛?- <code>Algbw</code> 瀵?<code>algbw</code>锛?- <code>Busbw</code> 瀵?<code>busbw</code>锛?- <code>Iterations</code> 瀵?<code>-n</code>/<code>kccb.benchmark.iterations</code>锛?- <code>Collective</code> 瀵规祴璇曟搷浣滃拰搴忓彿锛?- <code>Ideal (%)</code> 鏄?KAI 棰濆鎻愪緵鐨勭浉瀵圭悊鎯冲甫瀹藉埄鐢ㄧ巼锛汵CCL-tests 鏍囧噯鍒楁病鏈夊悓鍚嶅瓧娈碉紱</li>
+<li>PFC銆丒CN銆侀噸浼犮€丆NP 鏄綉缁滃仴搴锋寚鏍囷紝NCCL-tests 鏍囧噯杈撳嚭娌℃湁瀵瑰簲鍒椼€?</li>
+</ul>
+<h3>5.2 iteration_metric.csv锛氭寜杩唬鐨勬椂搴忓拰鍒嗗竷</h3>
+<p>瀛楁鍖呮嫭 <code>Collective Start/End/Completion Time</code>銆乣Algbw<code>銆乣Busbw</code>銆乣Ideal<code>浠ュ強</code>Min/P50/P95/Max FCT`銆傚畠鑳藉琛ㄨ揪鍗曡疆/澶氳疆鎶栧姩鍜?FCT 鍒嗗竷锛汵CCL-tests 鏍囧噯鏂囨湰閫氬父鍙姤鍛婅仛鍚堝悗鐨勫钩鍧囨椂闂达紝涓嶈兘鐩存帴鎻愪緵 P50/P95/Max銆?</p>
+<h3>5.3 interval_metrics.csv锛氳仛鍚堢粺璁″眰</h3>
+<p>瀛楁鍖呮嫭 <code>Min/Max/Avg Collective Time</code>銆乣Min/Max/Avg Algbw<code>銆乣Min/Max/Avg Busbw</code>銆乣Min/Max/Avg Ideal`锛屼互鍙?PFC銆丒CN銆侀噸浼犮€佹€绘椂闂村拰 Duty Cycle銆傚畠鏄€傚悎鐢昏秼鍔垮拰灞曠ず鍖洪棿缁熻鐨勭粨鏋滃眰銆?</p>
+<h3>5.4 port_metrics.csv锛氱鍙?閾捐矾灞?</h3>
+<p>瀛楁鍖呮嫭鏈虹鍦板潃/绔彛銆丷anks銆丩ink State銆丩ink Speed銆丗rames/Bytes Tx/Rx銆丆RC Errors銆丳ause Frames Rx銆丷oCEv2 QPs Configured/Ready銆佹暟鎹抚銆丄CK/NACK銆丗rame Sequence Errors銆丒CN-CE銆丆NP銆侀噸浼犮€傚畠鎶婃€ц兘缁撴灉鍜岀墿鐞嗛摼璺?鍗忚璁℃暟鍣ㄥ叧鑱旇捣鏉ワ紝NCCL-tests 娌℃湁绛変环鐨勬爣鍑嗙粨鏋滃瓧娈点€?</p>
+<h3>5.5 qp_metrics.csv锛歈P/璺緞灞?</h3>
+<p>瀛楁鍖呮嫭鏁版嵁瑙勬ā銆乧ollective銆佹簮/鐩殑 QP銆佹簮/鐩殑 rank/NIC銆佸彂閫?鎺ユ敹/澶辫触娑堟伅銆乀x/Rx bytes銆佸抚璁℃暟銆佸簭鍙烽敊璇€侀噸浼犮€丄CK/NACK銆丒CN/CNP銆佹渶灏?骞冲潎/鏈€澶?latency銆佷贡搴忓拰閲嶅鍖呫€侼CCL-tests 鐨勬爣鍑嗚緭鍑轰笉鏆撮湶 QP 绾ц娴嬨€?</p>
+<h3>5.6 flow_metrics.csv锛氭祦/鏁版嵁鍧楀眰</h3>
+<p>瀛楁鍖呮嫭 Data size銆丆ollective銆両teration銆丏ata Chunk Transfer ID銆丵P ID銆丆hannel ID銆丅uffer Offset銆丆hunk Count銆佹簮/鐩殑 rank/NIC銆丼tart/End/Completion time銆乀ransmit Type銆丒mulated Tx Component銆丗low Size銆傚畠鑳借拷韪叿浣撴暟鎹潡鐨勮矾寰勫拰瀹屾垚鏃堕棿锛孨CCL-tests 娌℃湁绛変环灞傘€?</p>
+<h2>6. 鐩存帴鍙瘮涓庝笉鍙洿鎺ユ瘮瀛楁</h2>
+<table>
+<thead>
+<tr>
+<th>姣旇緝缁撹</th>
+<th>瀛楁</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>鍙洿鎺ュ榻?</td>
+<td>鏁版嵁瑙勬ā锛歂CCL <code>size</code> 鈫?KAI <code>Data size (B)</code>锛涙椂闂达細<code>time</code> 鈫?<code>Collective Time (ms)</code>锛涚畻娉曞甫瀹斤細<code>algbw</code> 鈫?<code>Algbw</code>锛涙€荤嚎甯﹀锛歚busbw<code> 鈫?</code>Busbw<code>锛涙搷浣滐細娴嬭瘯绋嬪簭/collective 鈫?</code>Collective<code>锛涜凯浠ｆ鏁帮細</code>-n<code> 鈫?</code>Iterations`</td>
+</tr>
+<tr>
+<td>鍙湪缁熶竴鍙ｅ緞鍚庡榻?</td>
+<td>NCCL <code>count</code> 闇€瑕佺粨鍚?<code>type</code> 鐨勫厓绱犲瓧鑺傛暟鎹㈢畻鎴?bytes锛汯AI 涓昏鐩存帴璁板綍 bytes銆侼CCL <code>root</code>/<code>redop</code> 闇€瑕佹斁鍏ユ搷浣滃厓鏁版嵁锛屼笌 KAI 鐨?collective algorithm 涓€璧疯В閲娿€侼CCL <code>time</code> 鐨勮〃澶村崟浣嶅彲鑳芥槸 us锛孠AI summary 鏄庣‘涓?ms锛岄渶缁熶竴鍗曚綅銆?</td>
+</tr>
+<tr>
+<td>KAI 鐙湁</td>
+<td><code>Ideal (%)</code>銆丳FC/ECN/CNP銆丗rames ReTx銆丏uty Cycle銆佺鍙ｉ摼璺€丆RC銆丳ause銆丵P銆乫low銆丗CT 鍒嗕綅鏁般€佹晠闅滄敞鍏ョ粨鏋?</td>
+</tr>
+<tr>
+<td>NCCL-tests 鐙湁鎴栨爣鍑嗗垪鐙湁</td>
+<td><code>count</code>銆乣type<code>銆乣redop</code>銆乣root<code>銆乣#wrong</code>銆乮n-place/out-of-place銆丯CCL tuning 淇℃伅</td>
+</tr>
+</tbody>
+</table>
+<h2>7. 鍏抽敭鍙ｅ緞椋庨櫓</h2>
+<ol>
+<li>*<em>collective 绠楁硶涓嶅悓浼氭敼鍙?busbw 鐨勫惈涔夈€?</em> NCCL <code>busbw</code> 浣跨敤鎸?collective 瀹氫箟鐨勬崲绠楀洜瀛愶紱KAI 鏍锋湰鏄?<code>ALL_GATHER</code>锛屾瘮杈冩椂蹇呴』浣跨敤鐩稿悓 collective 鍜岀浉鍚?rank 鏁般€?2. *<em>鏃堕棿鍗曚綅涓嶅悓銆?</em> NCCL 杈撳嚭甯歌琛ㄥご涓?<code>us</code>锛孠AI summary/iteration 鏄庣‘鏄?<code>ms</code>銆傜粺涓€妯″瀷寤鸿鍐呴儴浣跨敤绾崇鎴栧井绉掞紝灞曠ず灞傚啀杞崲銆?3. *<em>鏁版嵁瑙勬ā涓嶄竴瀹氭槸鍚屼竴涓€昏緫閲忋€?</em> NCCL 鐨?<code>size</code>/<code>count</code> 涓?KAI 鐨?<code>Data size (B)</code> 闇€瑕佺‘璁ゆ槸 per-rank銆乻end buffer 杩樻槸 collective 鎬婚噺锛涗笉鑳戒粎鍑垪鍚嶅悎骞躲€?4. *<em>閿欒涓庣綉缁滆鏁板櫒涓嶈兘娣蜂负涓€璋堛€?</em> NCCL <code>#wrong</code> 鏄粨鏋滄纭€ч敊璇紱KAI 鐨?<code>CRC Errors</code>銆丯ACK銆侀噸浼犮€丒CN 鏄綉缁?鍗忚浜嬩欢锛屼笉绛変环浜?<code>#wrong</code>銆?5. *<em>NCCL-tests 鐨勫钩鍧囧€间笌 KAI 鍒嗗竷鍊煎眰绾т笉鍚屻€?</em> KAI 鐨?FCT銆乵in/p50/p95/max 闇€瑕佸崟鐙缓妯★紱涓嶈兘瑕嗙洊 NCCL 鐨勫钩鍧?<code>time</code>銆?</li>
+</ol>
+<h2>8. 寤鸿鍛堢幇鐨勭粺涓€鎶ュ憡瀛楁</h2>
+<p>鏍规嵁褰撳墠瑕佹眰锛岀晫闈㈠彧鍛堢幇 nccl-tests 瀹為檯鑳藉浜х敓銆佹垨鑳藉浠庡叾瀹樻柟 JSON report 绋冲畾璇诲彇鐨勫瓧娈点€侹AI 鐙湁鑰?nccl-tests 娌℃湁瀵瑰簲鏉ユ簮鐨勬寚鏍囦笉杩涘叆 NCCL 鎶ュ憡椤碉紝涔熶笉浠?<code>unavailable</code> 鎴?0 鐨勫舰寮忎吉閫犲睍绀恒€俙r<code>n **娴嬭瘯鍏冩暟鎹眰**锛氳繍琛屾椂闂淬€佷富鏈?杩涚▼/rank/GPU 鏁般€乧ollective銆丯CCL algorithm/protocol锛堣嫢鎶ュ憡鎻愪緵锛夈€乨atatype銆乺oot銆乺edop銆乮n-place/out-of-place銆亀armup銆佹寮忚凯浠ｆ鏁般€佹暟鎹妯¤捣姝㈠拰姝ヨ繘銆丯CCL/CUDA/椹卞姩鐗堟湰銆俙r</code>n
+**涓绘€ц兘灞?*锛歚size<code>銆乣count</code>銆乣time<code>銆乣algbw</code>銆乣busbw<code>銆乣#wrong</code>锛屼互鍙?JSON report 鍙彁渚涚殑瀹為檯杩唬缁熻锛歚min_us<code>銆乣max_us</code>銆乣avg_us<code>銆乣p50_us</code>銆乣p95_us<code>銆乣p99_us</code>銆乣stdev_us<code>銆乣cv_pct</code>銆俙r<code>n **鏍￠獙涓庢眹鎬诲眰**锛歰ut-of-bounds 妫€鏌ユ暟閲忓拰鐘舵€併€佸钩鍧?bus bandwidth锛堝鏋滆娆℃姤鍛婃彁渚涳級銆佹祴璇曟垚鍔?澶辫触鐘舵€併€俙r</code>n
+浠ヤ笅瀛楁涓嶇撼鍏?NCCL-tests 鍘熷瀷鐨勫憟鐜拌寖鍥达細<code>Ideal (%)</code>銆丳FC銆丒CN銆丆NP銆丗rames ReTx銆丏uty Cycle銆丆RC銆丳ause銆佺鍙ｉ摼璺姸鎬併€丵P 绾ф寚鏍囥€乫low/FCT 鍒嗕綅鏁板拰 KAI 鏁呴殰娉ㄥ叆缁撴灉銆傚畠浠睘浜?KAI 缃戠粶浠〃鎴栦豢鐪熷櫒瑙傛祴锛屽綋鍓?nccl-tests 娌℃湁鍚岀瓑鏁版嵁婧愩€俙r`n</p>
+<h2>9. 鏂囦欢绾ц瘉鎹储寮?</h2>
+<ul>
+<li>NCCL CLI/config锛歚E:\dpi\nccl-tests-master\README.md:37-106`</li>
+<li>NCCL 鎸囨爣瀹氫箟锛歚E:\dpi\nccl-tests-master\doc\PERFORMANCE.md:3-27<code>锛屼互鍙婅鏂囦欢涓悇 collective 鐨?busbw 鍏紡銆?- KAI 閰嶇疆锛歚...\trial.yaml</code> 鐨?<code>binding</code>銆乣kccb.benchmark<code>銆乣rocev2</code>銆乣impairments<code>銆乣infrastructureProfile</code>銆?- KAI 涓荤粨鏋滐細<code>...\csv\summary.csv</code>銆?- KAI 杩唬缁熻锛歚...\csv\iteration_metric.csv<code>銆乣...\csv\interval_metrics.csv</code>銆?- KAI 閾捐矾/QP/娴佺粨鏋滐細<code>...\csv\port_metrics.csv</code>銆乣...\csv\qp_metrics.csv<code>銆乣...\csv\flow_metrics.csv</code>銆?</li>
+</ul>
+
+</article></main>
+<footer>? nccl-kai-field-comparison.md ???? ? ??????????????????</footer>
+</body>
+</html>

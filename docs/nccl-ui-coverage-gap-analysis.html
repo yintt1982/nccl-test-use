@@ -1,0 +1,124 @@
+<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><meta name="description" content="nccl-tests 原型测试覆盖差距分析"><title>nccl-tests 原型覆盖差距分析</title><style>:root{color-scheme:light;--ink:#17212b;--line:#d8e0e8;--paper:#fff;--canvas:#f3f6f9;--accent:#1769aa;--code:#f1f4f7}*{box-sizing:border-box}body{margin:0;background:var(--canvas);color:var(--ink);font:16px/1.72 system-ui,-apple-system,"Segoe UI",sans-serif}header{background:#102a43;color:#fff;padding:18px max(24px,calc((100vw - 1120px)/2));display:flex;justify-content:space-between;align-items:center}header a{color:#cfe8ff}main{max-width:1200px;margin:32px auto;padding:44px 56px;background:var(--paper);border:1px solid var(--line);border-radius:12px}article{max-width:1040px;margin:auto}h1,h2,h3{line-height:1.3;color:#102a43}h1{font-size:2.1rem;border-bottom:1px solid var(--line);padding-bottom:1rem}h2{font-size:1.5rem;margin-top:2.2rem;border-bottom:1px solid var(--line)}a{color:var(--accent)}code{font-family:ui-monospace,Consolas,monospace;background:var(--code);padding:.12em .35em;border-radius:4px}table{border-collapse:collapse;width:100%;display:block;overflow-x:auto;margin:1.2rem 0;font-size:.93rem}th,td{border:1px solid var(--line);padding:9px 12px;text-align:left;vertical-align:top;min-width:130px}th{background:#edf3f8;color:#15334d}@media(max-width:720px){main{margin:12px;padding:26px 20px}body{font-size:15px}}</style></head><body><header><strong>NCCL Tests · 覆盖分析</strong><a href="nccl-ui-coverage-gap-analysis.md">查看 Markdown</a></header><main><article><h1>Current nccl-tests Prototype Coverage Gaps</h1>
+<p>Research date: 2026-10-26. Page: http://112.25.236.50:9007/. Sources: current prototype UI, NVIDIA nccl-tests upstream README, and local source at <code>E:/dpi/nccl-tests-master</code>. This is static source analysis; no GPU benchmark was run. The local <code>src/common.h</code> version macro says <code>2.21.1</code>, while its README/source tree includes features with newer NCCL requirements and has no <code>.git</code> metadata, so the local snapshot cannot be proven to be the latest upstream revision. The coverage inventory below describes the checked-out tree; verify supported binaries and dependencies on the target host and refresh the source snapshot before treating it as a latest-version audit.</p>
+<h2>Conclusion</h2>
+<p>The prototype does <strong>not</strong> cover all nccl-tests functionality. It covers nine standard collective choices and most basic size/rank/timing parameters. The local source's standard benchmark set includes 11 collectives: AllReduce, AllGather, Broadcast, ReduceScatter, Reduce, AlltoAll, AlltoAllv, Scatter, Gather, SendRecv, and Hypercube. The UI is missing AlltoAllv and Hypercube. Upstream also documents two distinct test families: <code>comm_ops_perf</code> for communicator operations and GIN device API microbenchmarks. These need separate applications because their configuration and result schemas differ from collective tests.</p>
+<p>Recommended organization: basic collective configuration, test-specific configuration, advanced execution/diagnostics, and separate Communicator Ops and GIN workspaces.</p>
+<h2>Coverage matrix</h2>
+<table>
+<thead>
+<tr>
+  <th>Area</th>
+  <th>Present in page</th>
+  <th>Missing or constrained</th>
+  <th>Recommendation</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+  <td>Standard collectives</td>
+  <td>9: AllReduce, AllGather, ReduceScatter, Broadcast, Reduce, SendRecv, AlltoAll, Gather, Scatter</td>
+  <td>AlltoAllv and Hypercube</td>
+  <td>Add both as test-specific choices. Hypercube requires a power-of-two rank count. Source: <code>src/Makefile</code> <code>BIN_FILES_LIST</code>; upstream README.</td>
+</tr>
+<tr>
+  <td>Data types</td>
+  <td>float, half, int, double, bfloat16</td>
+  <td><code>-d all</code> and other NCCL types; actual support depends on build, NCCL, CUDA, and hardware</td>
+  <td>Add “all supported types” and dynamically filter choices based on target capabilities.</td>
+</tr>
+<tr>
+  <td>Reduction operations</td>
+  <td>sum, prod, min, max, avg</td>
+  <td><code>all</code> scan; source also has <code>mulsum</code>/PreMulSum capability depending on build/version</td>
+  <td>Add scan-all and supported <code>mulsum</code>; expose only for reduction collectives. This is distinct from UI <code>-a</code> timing aggregation.</td>
+</tr>
+<tr>
+  <td>Root selection</td>
+  <td>None</td>
+  <td><code>-r &lt;root/all&gt;</code> for root collectives</td>
+  <td>Add root rank (or all roots) for supported Broadcast/Reduce/Gather/Scatter modes; validate range against ranks and adapter support.</td>
+</tr>
+<tr>
+  <td>Message sweep and rank layout</td>
+  <td><code>-b/-e/-f/-i</code>, MPI process count, <code>-t/-g</code></td>
+  <td>hostfile/nodes, MPI launcher options and binding, explicit GPU mapping/device choice and environment</td>
+  <td>Add topology and launcher configuration for reproducible multi-node runs. Keep total ranks formula visible: MPI processes × threads × GPUs/thread.</td>
+</tr>
+<tr>
+  <td>Execution/timing</td>
+  <td><code>-w/-n/-m/-c/-N/-G/-I/-a/-C</code></td>
+  <td><code>-K</code> per-iteration skip, <code>-z</code> blocking, <code>-p</code> parallel init, <code>-y</code> default stream</td>
+  <td>Add to advanced options with dependency checks: <code>-K</code> needs <code>-I 1</code>; <code>-z 3</code> conflicts with CUDA Graph <code>-G</code>.</td>
+</tr>
+<tr>
+  <td>Diagnostics/reporting</td>
+  <td><code>-J</code>, Summary/Details/Iterations sample views</td>
+  <td><code>-T</code> timeout, <code>-M</code> memory report, <code>-S</code> timestamps, <code>-u</code> unalign, <code>-U</code> tuning</td>
+  <td>Add optional diagnostic controls and preserve command, versions, environment, device/rank mapping, and correctness status in real reports. <code>-J</code> takes a path, not a boolean.</td>
+</tr>
+<tr>
+  <td>Rank splitting</td>
+  <td>One MPI process group visualization</td>
+  <td><code>NCCL_TESTS_SPLIT</code> / <code>NCCL_TESTS_SPLIT_MASK</code> can create parallel communicator groups</td>
+  <td>Add advanced rank-group configuration and show group/color. Explain that reported bandwidth is per group.</td>
+</tr>
+<tr>
+  <td>NCCL implementation/registration</td>
+  <td>None</td>
+  <td><code>-R</code> registration; <code>-D/-V</code> device API; <code>-H</code> host RMA; support is collective- and version-specific</td>
+  <td>Add only after capability probing. <code>-D</code> and <code>-H</code> are mutually exclusive; both require symmetric registration <code>-R 2</code>.</td>
+</tr>
+<tr>
+  <td>AlltoAllv</td>
+  <td>None</td>
+  <td>Generated traffic spread or explicit traffic matrix, scaling, per-rank summary; special size semantics</td>
+  <td>Provide a dedicated panel for traffic mode, spread, matrix file/editor, scale, and summary. Do not treat it as equal-sized AlltoAll. See <code>src/alltoallv.cu</code>.</td>
+</tr>
+<tr>
+  <td>Communicator Ops</td>
+  <td>None</td>
+  <td><code>comm_ops_perf</code> measures init/split/shrink/grow; separate MPI/NCCL requirements, arguments, and latency output</td>
+  <td>Add a distinct application with operation type, communicator-size sweep, resize/share/abort options, and latency report.</td>
+</tr>
+<tr>
+  <td>GIN device API</td>
+  <td>None</td>
+  <td><code>device_api/gin</code> includes latency and throughput tests for put/get/signal variants; requires MPI, NCCL 2.30.7+, exactly 2 ranks and 1 GPU/rank</td>
+  <td>Add a distinct workspace with category, operation, size sweep, CTA/thread count, RSM, queue depth and GIN flags. Use its own latency, MiB/s, and message-rate report fields.</td>
+</tr>
+</tbody>
+</table>
+<h2>Suggested priorities</h2>
+<h3>First: complete common collective workflows</h3>
+<ol>
+<li>Add AlltoAllv and Hypercube, with their specific constraints.</li>
+<li>Add root rank, host/node and MPI configuration, GPU mapping, and environment controls.</li>
+<li>Add <code>-K</code>, <code>-z</code>, <code>-p</code>, <code>-y</code>, and timeout <code>-T</code>, including compatibility validation.</li>
+<li>Support type/op “all” scans and filter choices by the installed binary's capabilities.</li>
+</ol>
+<h3>Second: advanced diagnostics and implementations</h3>
+<ol>
+<li>Add <code>-M</code>, <code>-S</code>, <code>-u</code>, and <code>-U</code>.</li>
+<li>Add <code>NCCL_TESTS_SPLIT</code> groups and topology visualization.</li>
+<li>Add <code>-R/-D/-V/-H</code> only with version, collective support, and mutual-exclusion checks.</li>
+<li>Treat the JSON output path as a path/archival setting rather than a simple on/off toggle.</li>
+</ol>
+<h3>Third: separate test workspaces</h3>
+<ol>
+<li>Communicator Ops: init/split/shrink/grow tasks and millisecond latency summaries.</li>
+<li>GIN: point-to-point device API latency/throughput; enforce its two-rank constraint and use its dedicated report metrics.</li>
+</ol>
+<h2>Prototype boundary</h2>
+<p>Full command-line coverage does not mean displaying every control at once. Build the form from the selected test binary and detected nccl-tests/NCCL/MPI/GPU capabilities. Show only valid options, retain resolved values in the command preview, and validate dependencies before submission.</p>
+<p>The current report is fixed illustrative data and does not change with configuration. It demonstrates report layout only; it cannot establish that a UI option is connected to a real execution backend.</p>
+<h2>Primary source locations</h2>
+<ul>
+<li><code>nccl-tests-master/README.md</code>: CLI, rank count, split groups, Communicator Ops, and GIN.</li>
+<li><code>nccl-tests-master/src/Makefile</code>: standard binary list and version-gated targets.</li>
+<li><code>nccl-tests-master/src/common.cu</code>: argument parsing, compatibility checks, split groups, and device selection.</li>
+<li><code>nccl-tests-master/src/alltoallv.cu</code>: traffic matrix and generated traffic options.</li>
+<li><code>nccl-tests-master/src/comm_ops.cu</code>: communicator benchmark.</li>
+<li><code>nccl-tests-master/src/device_api/gin/README.md</code> and <code>src/device_api/gin/utils/args.cc</code>: GIN binaries, options, and constraints.</li>
+<li>Upstream rolling README: https://github.com/NVIDIA/nccl-tests#usage</li>
+</ul>
+</article></main></body></html>

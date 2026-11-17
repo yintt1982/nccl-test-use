@@ -1,0 +1,198 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="description" content="nccl-tests：算子适配层、指标与正确性验证">
+<title>nccl-tests：算子适配层、指标与正确性验证 | nccl-tests ????</title>
+<style>
+:root{color-scheme:light;--ink:#17212b;--muted:#5b6775;--line:#d8e0e8;--paper:#fff;--canvas:#f3f6f9;--accent:#1769aa;--code:#f1f4f7}
+*{box-sizing:border-box}body{margin:0;background:var(--canvas);color:var(--ink);font:16px/1.72 system-ui,-apple-system,"Segoe UI",sans-serif}
+header{background:#102a43;color:#fff;padding:18px max(24px,calc((100vw - 1120px)/2));display:flex;justify-content:space-between;align-items:center;gap:16px}
+header strong{font-size:15px;letter-spacing:.02em}header a{color:#cfe8ff;text-decoration:none;font-size:14px}
+main{max-width:1120px;margin:32px auto;padding:44px 56px;background:var(--paper);border:1px solid var(--line);border-radius:12px;box-shadow:0 8px 30px #19324b0c}
+article{max-width:900px;margin:auto}h1,h2,h3,h4{line-height:1.3;color:#102a43}h1{font-size:2.15rem;margin:0 0 1.4rem;padding-bottom:1rem;border-bottom:1px solid var(--line)}h2{font-size:1.55rem;margin-top:2.2rem;padding-bottom:.4rem;border-bottom:1px solid var(--line)}h3{font-size:1.2rem;margin-top:1.8rem}a{color:var(--accent);text-underline-offset:3px}p,ul,ol{margin:.85rem 0}li{padding-left:.2rem;margin:.25rem 0}blockquote{margin:1.2rem 0;padding:.2rem 1rem;border-left:4px solid #77a9d3;color:var(--muted);background:#f6f9fc}code{font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-size:.9em;background:var(--code);padding:.12em .35em;border-radius:4px}pre{overflow:auto;padding:18px;background:#101820;color:#e8eef4;border-radius:8px;line-height:1.55}pre code{background:transparent;padding:0;color:inherit}table{border-collapse:collapse;width:100%;display:block;overflow-x:auto;margin:1.2rem 0;font-size:.94rem}th,td{border:1px solid var(--line);padding:9px 12px;text-align:left;vertical-align:top}th{background:#edf3f8;color:#15334d}hr{border:0;border-top:1px solid var(--line);margin:2rem 0}img{max-width:100%;height:auto}footer{max-width:1120px;margin:0 auto 30px;padding:0 16px;text-align:center;color:var(--muted);font-size:13px}
+@media(max-width:720px){main{margin:12px;padding:26px 20px;border-radius:8px}header{padding:14px 20px}h1{font-size:1.7rem}body{font-size:15px}}
+</style>
+</head>
+<body>
+<header><strong>nccl-tests ????</strong><a href="nccl-collectives-metrics-research.md">?? Markdown ???</a></header>
+<main><article>
+<h1>nccl-tests：算子适配层、指标与正确性验证</h1>
+<p>研究日期：2026-10-26。范围：本地 <code>E:/dpi/nccl-tests-master</code>，静态阅读；本笔记不声称该目录为最新上游版本，也未执行 GPU 测试。源码位置均相对该目录，供主研究文档整合。</p>
+<h2>1. 结构与职责</h2>
+<p>nccl-tests 公共框架并不为每种 collective 复制一套测试驱动，而是通过两层 C 风格函数指针接口接入不同算子（<code>src/common.h:115–148</code>）：</p>
+<ul>
+<li><code>testEngine</code> 是测试程序级接口：<code>getBuffSize</code> 决定缓冲区需求，<code>runTest</code> 选择数据类型/归约操作/root 等测试组合；可选 <code>initCommConfig</code> 定制 communicator 配置；按 NCCL 编译版本可提供 <code>getDevCommRequirements</code> 声明 device API 资源需求。</li>
+<li><code>testColl</code> 是单种通信操作的接口：<code>getCollByteCount</code> 把统一测试尺寸换算为 sendcount、recvcount、API paramcount 和 in-place 偏移；<code>initData</code> 构造输入与预期输出；<code>runColl</code> 发起真正通信；<code>getBw</code> 按算子语义计算带宽。</li>
+<li><code>common.cu</code> 负责统一调度、计时、调用上述回调及检查数据；例如 <code>getCollByteCount</code> 位于 933 行，<code>getBw</code> 位于 824 行，检查流程位于 828–887 行。</li>
+<li><code>verifiable/</code> 是可复现测试数据生成与结果验证模块，不是另一个通信后端；其 API 定义位于 <code>verifiable/verifiable.h:8–57</code>。</li>
+</ul>
+<p>以 AllReduce 为例：<code>ncclTestEngine.runTest → AllReduceRunTest → args-&gt;collTest=&amp;allReduceTest → TimeTest → 公共执行框架 → AllReduceRunColl → ncclAllReduce</code>。AllReduceRunTest 遍历指定/全部 type 与 op（<code>src/all_reduce.cu:532–589</code>），默认实现 <code>deviceImpl=0</code> 直接调用 NCCL（500–508 行）。</p>
+<h2>2. 测试算子覆盖</h2>
+<p>本地 Makefile 的常规程序列表包括 11 项：all_reduce、all_gather、broadcast、reduce_scatter、reduce、alltoall、alltoallv、scatter、gather、sendrecv、hypercube（<code>src/Makefile:44</code>）。以下是功能语义：</p>
+<table>
+<thead>
+<tr>
+<th>测试</th>
+<th>做什么</th>
+<th>源码依据</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>AllReduce</td>
+<td>所有 rank 的数组逐元素归约，完整结果送达所有 rank</td>
+<td><code>src/all_reduce.cu:42–64,500–537</code></td>
+</tr>
+<tr>
+<td>ReduceScatter</td>
+<td>逐元素归约后，每个 rank 获得完整结果的一段</td>
+<td><code>src/reduce_scatter.cu:10–50</code></td>
+</tr>
+<tr>
+<td>AllGather</td>
+<td>每个 rank 提供一段数据，每个 rank 收到全部段拼接</td>
+<td><code>src/all_gather.cu:10–44,102–114</code></td>
+</tr>
+<tr>
+<td>Broadcast</td>
+<td>root 的同一份数组分发到所有 rank</td>
+<td><code>src/broadcast.cu:18–39,74–96</code></td>
+</tr>
+<tr>
+<td>Reduce</td>
+<td>归约结果只在 root 有意义</td>
+<td><code>src/reduce.cu:18–49</code></td>
+</tr>
+<tr>
+<td>AlltoAll</td>
+<td>每个 rank 给每个 peer 各发一个等长数据块</td>
+<td><code>src/alltoall.cu:17–52,468–489</code></td>
+</tr>
+<tr>
+<td>AlltoAllv</td>
+<td>peer 间可不同长度；支持自动生成分布或显式流量矩阵</td>
+<td><code>src/alltoallv.cu:20–81</code></td>
+</tr>
+<tr>
+<td>Gather</td>
+<td>所有 rank 的各自片段聚集到 root</td>
+<td><code>src/gather.cu:89–115</code></td>
+</tr>
+<tr>
+<td>Scatter</td>
+<td>root 的完整数组切片分发给各 rank</td>
+<td><code>src/scatter.cu:86–114</code></td>
+</tr>
+<tr>
+<td>SendRecv</td>
+<td>每 rank 发给 rank+1、从 rank-1 接收，构成环</td>
+<td><code>src/sendrecv.cu:94–108</code></td>
+</tr>
+<tr>
+<td>Hypercube</td>
+<td>用异或配对、倍增块大小的 Send/Recv 序列实现 AllGather 模式</td>
+<td><code>src/hypercube.cu:48–68</code></td>
+</tr>
+</tbody>
+</table>
+<p>不能将这些文件一律解释为“薄封装 NCCL 单个函数”。例如 AlltoAll 可以回退为成组 Send/Recv（<code>src/alltoall.cu:468–489</code>）；本地 AllReduce 另含基于 device API 的 LSA/Multimem CUDA kernel（<code>src/all_reduce.cu:7–21,500–529</code>）；AllGather 包含按 NCCL 版本启用的 host RMA 路径（<code>src/all_gather.cu:46–114</code>）。高级分支必须随实际 NCCL 编译版本和硬件能力核实。</p>
+<h2>3. 指标原理：先统一消息量定义</h2>
+<p>设 N 为 communicator 的 rank 数，w 为数据类型字节数，t 为每次操作耗时（秒），C 为传给 <code>getBw</code> 的 count。带宽单位使用十进制 GB/s，即除以 1e9。下面是本地实现公式：</p>
+<table>
+<thead>
+<tr>
+<th>算子</th>
+<th>algbw</th>
+<th>busbw/algbw</th>
+<th>依据</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>AllReduce</td>
+<td>Cw/(1e9·t)</td>
+<td>2(N−1)/N</td>
+<td><code>src/all_reduce.cu:59–64</code></td>
+</tr>
+<tr>
+<td>AllGather</td>
+<td>CNw/(1e9·t)</td>
+<td>(N−1)/N</td>
+<td><code>src/all_gather.cu:38–43</code></td>
+</tr>
+<tr>
+<td>ReduceScatter</td>
+<td>CNw/(1e9·t)</td>
+<td>(N−1)/N</td>
+<td><code>src/reduce_scatter.cu:37–42</code></td>
+</tr>
+<tr>
+<td>Broadcast</td>
+<td>Cw/(1e9·t)</td>
+<td>1</td>
+<td><code>src/broadcast.cu:34–39</code></td>
+</tr>
+<tr>
+<td>Reduce</td>
+<td>Cw/(1e9·t)</td>
+<td>1</td>
+<td><code>src/reduce.cu:36–39</code></td>
+</tr>
+<tr>
+<td>AlltoAll</td>
+<td>CNw/(1e9·t)</td>
+<td>(N−1)/N</td>
+<td><code>src/alltoall.cu:47–52</code></td>
+</tr>
+<tr>
+<td>Gather/Scatter</td>
+<td>CNw/(1e9·t)</td>
+<td>(N−1)/N</td>
+<td><code>src/gather.cu:38–43</code>; <code>src/scatter.cu:34–39</code></td>
+</tr>
+<tr>
+<td>SendRecv</td>
+<td>Cw/(1e9·t)</td>
+<td>1</td>
+<td><code>src/sendrecv.cu:38–43</code></td>
+</tr>
+<tr>
+<td>Hypercube</td>
+<td>C(N−1)w/(1e9·t)</td>
+<td>1</td>
+<td><code>src/hypercube.cu:40–45</code></td>
+</tr>
+</tbody>
+</table>
+<p>AlltoAllv 不能套用等长 AlltoAll 的简单解释：源码按所有 rank 的最大 send/recv 字节计算带宽，并建议不均衡负载使用 <code>-a 3</code> 最大时间。流量生成、矩阵模式和逐 rank 汇总详见 <a href="nccl-adapter-deep-dive.html">AlltoAllv 深入笔记</a>。</p>
+<p><code>count</code> 并非所有算子都是“完整数组元素数”。例如 AllGather 输入 C、输出 CN；ReduceScatter 输入 CN、输出 C。其统一测试尺寸还会除以 N 并对齐，见 <code>src/all_gather.cu:10–17</code> 和 <code>src/reduce_scatter.cu:10–17</code>。</p>
+<p><code>busbw</code> 是在 algbw 上施加通信量归一化系数得到的推导指标，不是交换机端口计数器或某张 NIC 的直接吞吐读数（证据：各 GetBw 实现；数学说明见 <code>doc/PERFORMANCE.md</code> 的 Bus bandwidth 和 Summary）。官方在线同名文档也解释该系数用于 collective 的硬件带宽比较；本笔记公式以本地代码为准。</p>
+<p>另有一个容易误读之处：本地 <code>doc/PERFORMANCE.md</code> 开头写 time 单位 ms，但实际 <code>common.cu:886</code> 将秒乘 1e6，输出变量名为 timeUsec。报告解析应以实际输出表头和实现为准，而不是沿用该文档的 ms 说法。</p>
+<h2>4. 正确性验证调用链</h2>
+<p>以 AllReduce 为例（<code>src/all_reduce.cu:42–55</code>）：</p>
+<ol>
+<li>为每个 GPU/rank 建立输入，in-place 时使用接收缓冲区作为输入。</li>
+<li><code>InitData → ncclVerifiablePrepareInput</code>：根据 type、op、seed、rank 数、当前 rank 生成数据（<code>src/common.cu:288–290</code>）。</li>
+<li><code>InitDataReduce → ncclVerifiablePrepareExpected</code>：独立生成预期归约结果（<code>src/common.cu:283–285</code>）。</li>
+<li>性能计时结束后，按 datacheck 次数重新初始化，执行一个检查用通信并等待完成（<code>src/common.cu:824–876</code>）。因此不能说性能计时的每一轮都被逐元素验证。</li>
+<li><code>CheckData → CheckDelta → ncclVerifiableVerify</code>：比较实际输出与 expected，汇总本线程各 GPU 的不匹配元素数，再跨线程/进程求和（<code>src/common.cu:277–280,449–492,878–887</code>）。</li>
+</ol>
+<p><code>verifiable.h:8–10</code> 明确说明数据经过构造，使浮点归约具有可预测输出。这不是用随机真实训练数据运行一个完整 CPU reference model。验证代码根据类型和 op 设置容差；默认 tolerance=0，浮点 Avg 允许 tolerance=2，比较实现以相应位宽整数表示的差为基础（<code>verifiable/verifiable.cu:1188–1228,1306–1339</code>）。因此不应概括成“任意浮点误差都可接受”或“一律逐位完全相同”。</p>
+<h2>5. 容易形成错误理解的边界</h2>
+<ul>
+<li>SendRecv 是环形 peer 配对，不能直接描述成任意两卡点对点拓扑测试（<code>src/sendrecv.cu:100–108</code>）。</li>
+<li>in-place 列存在不等于所有算子支持正确的原地语义。本地 AlltoAll 和 SendRecv 显式标注不支持，且设置 <code>reportErrors=0</code>（<code>src/alltoall.cu:42–43</code>; <code>src/sendrecv.cu:33–34</code>）。</li>
+<li><code>#wrong=0</code> 只对启用的检查、对应测试数据和执行条件有意义；关闭检查或禁用报告不能据此宣称正确性得到验证（<code>src/common.cu:831–887</code>）。</li>
+<li>相同 <code>size</code> 字段在不同算子中需先解释 send/recv/API count，再比较带宽，不能假定发送、接收缓冲区总量完全相同（<code>src/common.h:117–120</code>）。</li>
+<li>通信算子 API 与底层 ring/tree/传输路径是不同层次；默认 AllReduce 适配器在此只调用 <code>ncclAllReduce</code>，算法选择须继续追踪 NCCL 本体（<code>src/all_reduce.cu:505–508</code>）。</li>
+<li>Hypercube 实现用 <code>rank ^ mask</code> 作为对端，并未在上述循环做非 2 次幂 rank 修正；适用 rank 条件需进一步验证，不能把它等同通用 NCCL AllGather（<code>src/hypercube.cu:61–67</code>）。</li>
+</ul>
+<h2>6. 后续深入顺序</h2>
+<p>已完成默认 AllReduce 主链、AllGather/ReduceScatter 数据布局、验证机制、各 adapter 的基本语义，以及计时/JSON 报告结构；详见本目录关联笔记。尚需整理多机 rank 映射与参数覆盖矩阵，并在可用 GPU 环境实测。Device API/RMA 和 NCCL 内部算法/传输仍作为独立深入层次，不能仅凭 nccl-tests adapter 推导其具体算法选择。</p>
+
+</article></main>
+<footer>? nccl-collectives-metrics-research.md ???? ? ??????????????????</footer>
+</body>
+</html>

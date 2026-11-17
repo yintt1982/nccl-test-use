@@ -1,0 +1,19 @@
+# Local report data and generated output
+local-report/data/
+*.log
+*.tmp
+.tmp-*
+.verify-*
+.playwright-mcp/
+.deploy-*/
+prototype-video-frames/
+
+# Local captures and generated screenshots
+*.png
+*.jpg
+*.jpeg
+
+# Downloaded archives and source research dumps
+*.zip
+nccl-upstream-tree.json
+nccl-upstream-check.json

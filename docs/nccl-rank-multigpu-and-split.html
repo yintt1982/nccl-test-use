@@ -1,0 +1,628 @@
+<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Rank、单线程多 GPU 与 NCCL 通信分组详解</title><style>*{box-sizing:border-box}html{scroll-behavior:smooth}body{margin:0;background:#f4f8f6;color:#203b31;font:15px/1.85 "Segoe UI","Microsoft YaHei",sans-serif}aside{position:fixed;inset:0 auto 0 0;width:270px;padding:28px 22px;overflow:auto;background:#eaf2ed;border-right:1px solid #d7e5dc}aside strong{display:block;font-size:20px;margin-bottom:18px}aside a{display:block;padding:7px 0;font-size:13px}main{margin:28px 28px 28px 298px;padding:35px 44px;max-width:1300px;background:white;border:1px solid #dce7df;border-radius:14px}h1{font-size:30px;line-height:1.4}h2{font-size:23px;color:#176445;border-bottom:1px solid #dce7df;padding-bottom:10px;margin-top:45px;scroll-margin-top:20px}h3{font-size:18px}a{color:#16724c;text-decoration:none}a:hover{text-decoration:underline}pre{overflow:auto;padding:20px;background:#f2f6f3;border-radius:9px;font:13px/1.7 Consolas,monospace}code{background:#f0f5f2;padding:2px 4px}pre code{padding:0}.table-scroll{overflow-x:auto}table{width:100%;border-collapse:collapse;font-size:13px}th,td{border:1px solid #d7e4db;padding:10px 12px;text-align:left;vertical-align:top}th{background:#eaf4ee}tr:nth-child(even){background:#fafcfb}.diagram{margin:20px 0;overflow-x:auto;padding:12px;background:#fcfefd;border:1px solid #dce7df;border-radius:10px}.diagram svg{width:100%;min-width:720px;height:auto;display:block}figcaption{font-size:12px;color:#697e70;text-align:center}.toolbar{font-size:13px;color:#637d6c}button{padding:7px 14px;border:1px solid #9bbca8;border-radius:6px;background:#eef6f0;color:#225c3a;cursor:pointer}@media(max-width:1000px){aside{position:static;width:auto;max-height:260px}main{margin:15px;padding:22px}.diagram svg{min-width:650px}}@media print{aside,.toolbar{display:none}main{margin:0;padding:0;max-width:none;border:0}body{background:white}h2{break-after:avoid}tr,figure{break-inside:avoid}.diagram svg{min-width:0}pre{white-space:pre-wrap}}</style></head><body><aside><strong>NCCL 技术说明</strong><a href="#section-1">1. 名词及编号范围</a><a href="#section-2">2. 资源层级图</a><a href="#section-3">3. 数量关系及编号公式</a><a href="#section-4">4. 贯穿示例：2 节点、4 进程、每进程 2 线程、每线程 2 GPU</a><a href="#section-5">5. 补充：把 Rank 理解为“逻辑通信点”</a><a href="#section-6">6. 为什么一个 CPU 线程可以管理多个 GPU</a><a href="#section-7">7. 对分享分析中容易误解的表述作校正</a><a href="#section-8">8. 通信分组：逻辑隔离会改变实际测试行为</a><a href="#section-9">9. 补充资料与核验范围</a></aside><main><div class="toolbar">离线图文文档 · 2026-10-29　<button onclick="window.print()">打印 / 另存为 PDF</button></div><h1>Rank、单线程多 GPU 与 NCCL 通信分组详解</h1>
+<p>整理日期：2026-10-29。将用户提供的豆包分享分析与本轮通信分组解释合并为独立文档。采用归纳、图示和校正，不逐字转载分享全文；示例均为逻辑推算，非实测。</p>
+<p>阅读顺序：先理解编号和层级，再看单线程多 GPU，最后看通信分组的目的与边界。</p>
+<h2 id="section-1">1. 名词及编号范围</h2>
+<div class="table-scroll"><table>
+<thead>
+<tr>
+<th>名称</th>
+<th>编号/作用范围</th>
+<th>含义</th>
+<th>常见误解</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>节点</td>
+<td>一台主机</td>
+<td>承载 CPU、内存、GPU、NIC 和测试进程</td>
+<td>一个节点不等于一个 Rank</td>
+</tr>
+<tr>
+<td>MPI 进程</td>
+<td>操作系统进程</td>
+<td>由启动器创建，内部可以有多个测试线程</td>
+<td>一个进程不一定只管理一张 GPU</td>
+</tr>
+<tr>
+<td>MPI world rank，W</td>
+<td><code>MPI_COMM_WORLD</code></td>
+<td>全部 MPI 进程中的编号</td>
+<td>不等于设备号，也不因 split 而更改</td>
+</tr>
+<tr>
+<td>本地进程编号，L</td>
+<td>当前节点</td>
+<td>同节点进程的序号；本地源码按同主机且 world rank 更小的进程数计算</td>
+<td>不等于 split 后的组内 MPI rank</td>
+</tr>
+<tr>
+<td>线程，T</td>
+<td>一个 MPI 进程内</td>
+<td>由 <code>-t</code> 指定的测试线程</td>
+<td>不是 CUDA kernel 中的 GPU 线程</td>
+</tr>
+<tr>
+<td>每线程 GPU 数，g</td>
+<td>一个测试线程内</td>
+<td>由 <code>-g</code> 指定该线程管理的设备参与者数</td>
+<td>不是每节点 GPU 数</td>
+</tr>
+<tr>
+<td>split color，G</td>
+<td>本次分组</td>
+<td>相同 color 的 MPI 进程进入同一个子通信器</td>
+<td>color 不保证连续；也不表示节点号</td>
+</tr>
+<tr>
+<td>组内 MPI rank，S</td>
+<td>split 后的 MPI 子通信器</td>
+<td>一个进程在该组中的编号</td>
+<td>和主图中的 C 不同</td>
+</tr>
+<tr>
+<td>组内 NCCL rank，C</td>
+<td>一个 NCCL 通信器</td>
+<td>GPU 通信参与者的编号</td>
+<td>G0/C0 和 G1/C0 是不同参与者</td>
+</tr>
+<tr>
+<td>CUDA device，D</td>
+<td>进程可见的 CUDA 设备集合</td>
+<td>该进程用于选择设备的序号</td>
+<td>不是全局 GPU ID；可见设备掩码可能重排编号</td>
+</tr>
+</tbody>
+</table></div>
+<p>W/G/C/D 是当前原型的显示约定，不是所有工具通用的字段名。多个进程拥有相同 D 值是否冲突，要结合节点、可见设备映射和设备 UUID/PCI 标识判断。</p>
+<h2 id="section-2">2. 资源层级图</h2>
+<p>以下图中的箭头表示包含或管理关系，不表示物理通信链路。</p>
+<figure class="diagram"><svg viewBox="0 0 1225 660" role="img" aria-label="逻辑关系图 1" xmlns="http://www.w3.org/2000/svg"><defs><marker id="arrow1" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0 0 L8 4 L0 8" fill="#6d9b84"/></marker></defs>
+<path d="M612.5,84 C612.5,120 408.3333333333333,105 408.3333333333333,141" fill="none" stroke="#6d9b84" stroke-width="2" marker-end="url(#arrow1)"/>
+<path d="M612.5,84 C612.5,120 816.6666666666666,105 816.6666666666666,141" fill="none" stroke="#6d9b84" stroke-width="2" marker-end="url(#arrow1)"/>
+<path d="M408.3333333333333,209 C408.3333333333333,245 245.0,230 245.0,266" fill="none" stroke="#6d9b84" stroke-width="2" marker-end="url(#arrow1)"/>
+<path d="M408.3333333333333,209 C408.3333333333333,245 490.0,230 490.0,266" fill="none" stroke="#6d9b84" stroke-width="2" marker-end="url(#arrow1)"/>
+<path d="M816.6666666666666,209 C816.6666666666666,245 735.0,230 735.0,266" fill="none" stroke="#6d9b84" stroke-width="2" marker-end="url(#arrow1)"/>
+<path d="M816.6666666666666,209 C816.6666666666666,245 980.0,230 980.0,266" fill="none" stroke="#6d9b84" stroke-width="2" marker-end="url(#arrow1)"/>
+<path d="M245.0,334 C245.0,370 204.16666666666666,355 204.16666666666666,391" fill="none" stroke="#6d9b84" stroke-width="2" marker-end="url(#arrow1)"/>
+<path d="M245.0,334 C245.0,370 408.3333333333333,355 408.3333333333333,391" fill="none" stroke="#6d9b84" stroke-width="2" marker-end="url(#arrow1)"/>
+<path d="M204.16666666666666,459 C204.16666666666666,495 245.0,480 245.0,516" fill="none" stroke="#6d9b84" stroke-width="2" marker-end="url(#arrow1)"/>
+<path d="M204.16666666666666,459 C204.16666666666666,495 490.0,480 490.0,516" fill="none" stroke="#6d9b84" stroke-width="2" marker-end="url(#arrow1)"/>
+<path d="M408.3333333333333,459 C408.3333333333333,495 735.0,480 735.0,516" fill="none" stroke="#6d9b84" stroke-width="2" marker-end="url(#arrow1)"/>
+<path d="M408.3333333333333,459 C408.3333333333333,495 980.0,480 980.0,516" fill="none" stroke="#6d9b84" stroke-width="2" marker-end="url(#arrow1)"/>
+<path d="M490.0,334 C490.0,370 612.5,355 612.5,391" fill="none" stroke="#6d9b84" stroke-width="2" marker-end="url(#arrow1)"/>
+<path d="M735.0,334 C735.0,370 816.6666666666666,355 816.6666666666666,391" fill="none" stroke="#6d9b84" stroke-width="2" marker-end="url(#arrow1)"/>
+<path d="M980.0,334 C980.0,370 1020.8333333333334,355 1020.8333333333334,391" fill="none" stroke="#6d9b84" stroke-width="2" marker-end="url(#arrow1)"/>
+<rect x="500.5" y="16" width="224" height="68" rx="9" fill="#edf7f1" stroke="#9fc8af"/>
+<text x="612.5" y="55.0" text-anchor="middle" font-size="13" fill="#234e39">测试启动器</text>
+<rect x="296.3333333333333" y="141" width="224" height="68" rx="9" fill="#edf7f1" stroke="#9fc8af"/>
+<text x="408.3333333333333" y="180.0" text-anchor="middle" font-size="13" fill="#234e39">节点 gpu01</text>
+<rect x="704.6666666666666" y="141" width="224" height="68" rx="9" fill="#edf7f1" stroke="#9fc8af"/>
+<text x="816.6666666666666" y="180.0" text-anchor="middle" font-size="13" fill="#234e39">节点 gpu02</text>
+<rect x="133.0" y="266" width="224" height="68" rx="9" fill="#edf7f1" stroke="#9fc8af"/>
+<text x="245.0" y="305.0" text-anchor="middle" font-size="13" fill="#234e39">MPI 进程 W0 / 本地 L0</text>
+<rect x="378.0" y="266" width="224" height="68" rx="9" fill="#edf7f1" stroke="#9fc8af"/>
+<text x="490.0" y="305.0" text-anchor="middle" font-size="13" fill="#234e39">MPI 进程 W1 / 本地 L1</text>
+<rect x="623.0" y="266" width="224" height="68" rx="9" fill="#edf7f1" stroke="#9fc8af"/>
+<text x="735.0" y="305.0" text-anchor="middle" font-size="13" fill="#234e39">MPI 进程 W2 / 本地 L0</text>
+<rect x="868.0" y="266" width="224" height="68" rx="9" fill="#edf7f1" stroke="#9fc8af"/>
+<text x="980.0" y="305.0" text-anchor="middle" font-size="13" fill="#234e39">MPI 进程 W3 / 本地 L1</text>
+<rect x="92.16666666666666" y="391" width="224" height="68" rx="9" fill="#edf7f1" stroke="#9fc8af"/>
+<text x="204.16666666666666" y="430.0" text-anchor="middle" font-size="13" fill="#234e39">测试线程 T0</text>
+<rect x="296.3333333333333" y="391" width="224" height="68" rx="9" fill="#edf7f1" stroke="#9fc8af"/>
+<text x="408.3333333333333" y="430.0" text-anchor="middle" font-size="13" fill="#234e39">测试线程 T1</text>
+<rect x="133.0" y="516" width="224" height="68" rx="9" fill="#edf7f1" stroke="#9fc8af"/>
+<text x="245.0" y="555.0" text-anchor="middle" font-size="13" fill="#234e39">CUDA D0 / 一个 NCCL 参与者</text>
+<rect x="378.0" y="516" width="224" height="68" rx="9" fill="#edf7f1" stroke="#9fc8af"/>
+<text x="490.0" y="555.0" text-anchor="middle" font-size="13" fill="#234e39">CUDA D1 / 一个 NCCL 参与者</text>
+<rect x="623.0" y="516" width="224" height="68" rx="9" fill="#edf7f1" stroke="#9fc8af"/>
+<text x="735.0" y="555.0" text-anchor="middle" font-size="13" fill="#234e39">CUDA D2 / 一个 NCCL 参与者</text>
+<rect x="868.0" y="516" width="224" height="68" rx="9" fill="#edf7f1" stroke="#9fc8af"/>
+<text x="980.0" y="555.0" text-anchor="middle" font-size="13" fill="#234e39">CUDA D3 / 一个 NCCL 参与者</text>
+<rect x="500.5" y="391" width="224" height="68" rx="9" fill="#edf7f1" stroke="#9fc8af"/>
+<text x="612.5" y="430.0" text-anchor="middle" font-size="13" fill="#234e39">同样展开 2 线程 × 2 GPU</text>
+<rect x="704.6666666666666" y="391" width="224" height="68" rx="9" fill="#edf7f1" stroke="#9fc8af"/>
+<text x="816.6666666666666" y="430.0" text-anchor="middle" font-size="13" fill="#234e39">同样展开 2 线程 × 2 GPU</text>
+<rect x="908.8333333333334" y="391" width="224" height="68" rx="9" fill="#edf7f1" stroke="#9fc8af"/>
+<text x="1020.8333333333334" y="430.0" text-anchor="middle" font-size="13" fill="#234e39">同样展开 2 线程 × 2 GPU</text>
+</svg><figcaption>箭头表示结构或数据处理关系；不代表实测网络物理链路。</figcaption></figure>
+<p>纯文本结构（不支持 Mermaid 的阅读器也能查看）：</p>
+<pre><code class="language-text">节点
+└─ MPI 进程（W / 本地 L）
+   ├─ 测试线程 T0
+   │  ├─ GPU 槽位 0 → CUDA D → 通信器中的 C
+   │  └─ GPU 槽位 1 → CUDA D → 通信器中的 C
+   └─ 测试线程 T1
+      ├─ GPU 槽位 0 → CUDA D → 通信器中的 C
+      └─ GPU 槽位 1 → CUDA D → 通信器中的 C
+</code></pre>
+<h2 id="section-3">3. 数量关系及编号公式</h2>
+<p>设 MPI 进程总数为 P，每进程线程数为 t，每线程 GPU 数为 g，各进程使用相同 t/g。</p>
+<pre><code class="language-text">每进程 GPU 参与者数 K = t × g
+所有进程的 GPU 参与者总数 = P × t × g
+组 G 的 NCCL rank 数 = 该组 MPI 进程数 × t × g
+</code></pre>
+<p>这里统计的是参与者/设备槽位数。只有各参与者的设备分配不重复时，才能把它等同于不同物理 GPU 的数量。分组之后，总参与者数也不等于任意单个通信器的规模。</p>
+<p>设线程编号为 T、线程内 GPU 槽位为 i，均从 0 开始：</p>
+<pre><code class="language-text">进程内设备槽位 slot = T × g + i
+组内 NCCL rank C = S × t × g + slot
+默认 CUDA 设备号 D = L × t × g + slot
+显式设置 NCCL_TESTS_DEVICE=B 时：D = B + slot
+</code></pre>
+<p>上式来自本地源码的设备选择和 NCCL rank 初始化逻辑，适用于本文的常规测试配置。D 的默认计算使用分组前的本地进程编号 L，不使用组内 MPI rank S。</p>
+<p>如果没有 split，S=W，故 C=W×t×g+slot。仅在 t=1、g=1、没有分组重编号时，MPI world rank 和 NCCL rank 才在这类配置中恰好相同。</p>
+<h2 id="section-4">4. 贯穿示例：2 节点、4 进程、每进程 2 线程、每线程 2 GPU</h2>
+<h3>放置前提</h3>
+<ul>
+<li>节点 gpu01、gpu02 各有 8 张可见 GPU。</li>
+<li>gpu01 放置 W0、W1；gpu02 放置 W2、W3。</li>
+<li>每个进程 <code>-t 2 -g 2</code>，不设置设备覆盖。</li>
+<li>各进程对本节点设备的可见顺序一致；各设备不重复占用。</li>
+<li>该放置是示例前提，实际启动后应检查进程和设备报告。</li>
+</ul>
+<div class="table-scroll"><table>
+<thead>
+<tr>
+<th>节点</th>
+<th style="text-align:right">W</th>
+<th style="text-align:right">L</th>
+<th>T0 管理的设备</th>
+<th>T1 管理的设备</th>
+<th>不分组时的 C</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>gpu01</td>
+<td style="text-align:right">0</td>
+<td style="text-align:right">0</td>
+<td>D0、D1</td>
+<td>D2、D3</td>
+<td>C0–C3</td>
+</tr>
+<tr>
+<td>gpu01</td>
+<td style="text-align:right">1</td>
+<td style="text-align:right">1</td>
+<td>D4、D5</td>
+<td>D6、D7</td>
+<td>C4–C7</td>
+</tr>
+<tr>
+<td>gpu02</td>
+<td style="text-align:right">2</td>
+<td style="text-align:right">0</td>
+<td>D0、D1</td>
+<td>D2、D3</td>
+<td>C8–C11</td>
+</tr>
+<tr>
+<td>gpu02</td>
+<td style="text-align:right">3</td>
+<td style="text-align:right">1</td>
+<td>D4、D5</td>
+<td>D6、D7</td>
+<td>C12–C15</td>
+</tr>
+</tbody>
+</table></div>
+<p>结果：4 个 MPI 进程、8 个测试线程、16 个 GPU 参与者、1 个包含 16 ranks 的 NCCL 通信器。不同节点上的 D0 不是同一个物理设备。</p>
+<h3>设置 NCCL_TESTS_SPLIT=&quot;MOD 2&quot;</h3>
+<p>本地代码先计算 <code>color=W % 2</code>，调用 <code>MPI_Comm_split(MPI_COMM_WORLD, color, W, ...)</code>，再取得组内 MPI rank S。key 使用 W，因此组内按 W 顺序编号。整进程进入同一组，进程内线程/GPU 不会被此 split 拆到不同组。</p>
+<figure class="diagram"><svg viewBox="0 0 980 410" role="img" aria-label="逻辑关系图 2" xmlns="http://www.w3.org/2000/svg"><defs><marker id="arrow2" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0 0 L8 4 L0 8" fill="#6d9b84"/></marker></defs>
+<path d="M196.0,84 C196.0,120 326.6666666666667,105 326.6666666666667,141" fill="none" stroke="#6d9b84" stroke-width="2" marker-end="url(#arrow2)"/>
+<path d="M392.0,84 C392.0,120 326.6666666666667,105 326.6666666666667,141" fill="none" stroke="#6d9b84" stroke-width="2" marker-end="url(#arrow2)"/>
+<path d="M588.0,84 C588.0,120 653.3333333333334,105 653.3333333333334,141" fill="none" stroke="#6d9b84" stroke-width="2" marker-end="url(#arrow2)"/>
+<path d="M784.0,84 C784.0,120 653.3333333333334,105 653.3333333333334,141" fill="none" stroke="#6d9b84" stroke-width="2" marker-end="url(#arrow2)"/>
+<path d="M326.6666666666667,209 C326.6666666666667,245 326.6666666666667,230 326.6666666666667,266" fill="none" stroke="#6d9b84" stroke-width="2" marker-end="url(#arrow2)"/>
+<path d="M653.3333333333334,209 C653.3333333333334,245 653.3333333333334,230 653.3333333333334,266" fill="none" stroke="#6d9b84" stroke-width="2" marker-end="url(#arrow2)"/>
+<rect x="84.0" y="16" width="224" height="68" rx="9" fill="#edf7f1" stroke="#9fc8af"/>
+<text x="196.0" y="55.0" text-anchor="middle" font-size="13" fill="#234e39">W0 / gpu01 / L0</text>
+<rect x="214.66666666666669" y="141" width="224" height="68" rx="9" fill="#edf7f1" stroke="#9fc8af"/>
+<text x="326.6666666666667" y="180.0" text-anchor="middle" font-size="13" fill="#234e39">G0：W mod 2 = 0</text>
+<rect x="280.0" y="16" width="224" height="68" rx="9" fill="#edf7f1" stroke="#9fc8af"/>
+<text x="392.0" y="55.0" text-anchor="middle" font-size="13" fill="#234e39">W2 / gpu02 / L0</text>
+<rect x="476.0" y="16" width="224" height="68" rx="9" fill="#edf7f1" stroke="#9fc8af"/>
+<text x="588.0" y="55.0" text-anchor="middle" font-size="13" fill="#234e39">W1 / gpu01 / L1</text>
+<rect x="541.3333333333334" y="141" width="224" height="68" rx="9" fill="#edf7f1" stroke="#9fc8af"/>
+<text x="653.3333333333334" y="180.0" text-anchor="middle" font-size="13" fill="#234e39">G1：W mod 2 = 1</text>
+<rect x="672.0" y="16" width="224" height="68" rx="9" fill="#edf7f1" stroke="#9fc8af"/>
+<text x="784.0" y="55.0" text-anchor="middle" font-size="13" fill="#234e39">W3 / gpu02 / L1</text>
+<rect x="214.66666666666669" y="266" width="224" height="68" rx="9" fill="#edf7f1" stroke="#9fc8af"/>
+<text x="326.6666666666667" y="305.0" text-anchor="middle" font-size="13" fill="#234e39">独立 NCCL 通信器：C0–C7</text>
+<rect x="541.3333333333334" y="266" width="224" height="68" rx="9" fill="#edf7f1" stroke="#9fc8af"/>
+<text x="653.3333333333334" y="305.0" text-anchor="middle" font-size="13" fill="#234e39">独立 NCCL 通信器：C0–C7</text>
+</svg><figcaption>箭头表示结构或数据处理关系；不代表实测网络物理链路。</figcaption></figure>
+<div class="table-scroll"><table>
+<thead>
+<tr>
+<th style="text-align:right">W</th>
+<th style="text-align:right">G</th>
+<th style="text-align:right">S（组内 MPI）</th>
+<th>T0 的 C</th>
+<th>T1 的 C</th>
+<th>使用的 D</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td style="text-align:right">0</td>
+<td style="text-align:right">0</td>
+<td style="text-align:right">0</td>
+<td>C0、C1</td>
+<td>C2、C3</td>
+<td>D0–D3</td>
+</tr>
+<tr>
+<td style="text-align:right">1</td>
+<td style="text-align:right">1</td>
+<td style="text-align:right">0</td>
+<td>C0、C1</td>
+<td>C2、C3</td>
+<td>D4–D7</td>
+</tr>
+<tr>
+<td style="text-align:right">2</td>
+<td style="text-align:right">0</td>
+<td style="text-align:right">1</td>
+<td>C4、C5</td>
+<td>C6、C7</td>
+<td>D0–D3</td>
+</tr>
+<tr>
+<td style="text-align:right">3</td>
+<td style="text-align:right">1</td>
+<td style="text-align:right">1</td>
+<td>C4、C5</td>
+<td>C6、C7</td>
+<td>D4–D7</td>
+</tr>
+</tbody>
+</table></div>
+<pre><code class="language-text">G0 通信器：W0 的 4 个参与者 + W2 的 4 个参与者 → C0…C7
+G1 通信器：W1 的 4 个参与者 + W3 的 4 个参与者 → C0…C7
+</code></pre>
+<p>执行 AllReduce 时是两个独立的 8-rank 集合操作，而不是一个 16-rank AllReduce。每组都出现 C0 完全合法。分组没有把 W1 的设备从 D4–D7 改成 D0–D3。</p>
+<p>例如主图标签 <code>W2 G0 C4 D0</code>：它属于 MPI 进程 W2、通信组 G0，在该组中编号 C4，使用 W2 可见的 CUDA D0。只写“Rank 4”会丢失通信组上下文。</p>
+<h3>不同 split 表达式</h3>
+<p>对 W0…W7：</p>
+<div class="table-scroll"><table>
+<thead>
+<tr>
+<th>表达式</th>
+<th>分组结果</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>不设置</td>
+<td>所有进程进入 G0</td>
+</tr>
+<tr>
+<td>MOD 2</td>
+<td>G0={0,2,4,6}；G1={1,3,5,7}</td>
+</tr>
+<tr>
+<td>DIV 4</td>
+<td>G0={0,1,2,3}；G1={4,5,6,7}</td>
+</tr>
+<tr>
+<td>AND 0x1</td>
+<td>本例与 MOD 2 相同</td>
+</tr>
+</tbody>
+</table></div>
+<p>分组由 W 决定，不保证对应节点边界。只有结合实际进程放置，才能判断某组是节点内还是跨节点通信。不同组也未必一样大。</p>
+<h2 id="section-5">5. 补充：把 Rank 理解为“逻辑通信点”</h2>
+<p>本节及后续相关章节结合用户提供的豆包分享《一个线程管理多个GPU的原理与实现》整理。内容采用归纳与校正，不将分享中的推论视为已验证的源码事实。</p>
+<p>在 NCCL 集合通信语境下，可以把 rank 理解为“一个通信器内绑定到固定 CUDA 设备的逻辑通信点”。它不是 IP:port、网卡、CPU 线程，也不是节点。更准确的身份是“通信器 + rank”，再关联所在进程和设备。</p>
+<ul>
+<li>一个 MPI 进程可以持有多个 NCCL rank 的本地通信器对象。</li>
+<li>一个 NCCL rank 不跨多个 CUDA 设备，但同一个 GPU 可以参与多个不同通信器；不能反推“一张 GPU 在整个系统里只有一个 rank”。</li>
+<li>数据的传输路径由实际拓扑、算法、协议与配置决定；不是每个 rank 都与所有其他 rank 建立直接物理连接。</li>
+<li>MPI 不是 NCCL 的必需依赖。应用可以用其他机制交换初始化信息；本文中的 MPI world rank 是 nccl-tests 的 MPI 启动模式概念。</li>
+<li>Keysight 图中的 Rank 是工作负载的逻辑参与者标识，在概念上接近 NCCL 通信参与者；只有结合配置绑定才能断言具体编号对应关系。</li>
+</ul>
+<pre><code class="language-text">身份：通信器 G0 / NCCL rank C4
+   ├─ 所属进程：W2
+   ├─ 操作线程：本例为 T0
+   ├─ CUDA 设备：本进程可见 D0
+   └─ 实际设备身份：运行时核对 UUID / PCI 地址
+
+NIC、QP、Channel 是传输或执行资源，不能拿它们的编号替代 C4。
+</code></pre>
+<h2 id="section-6">6. 为什么一个 CPU 线程可以管理多个 GPU</h2>
+<p>CPU 线程是调用 CUDA/NCCL API 的发起方，不需要在每张 GPU 的整个执行期间独占一个 CPU 线程。线程可以选择当前 CUDA 设备，为不同设备准备缓冲区、stream 和 NCCL 通信器，再向各自的 stream 提交工作。</p>
+<p><code>cudaSetDevice</code> 改变调用线程后续 CUDA 操作所用的当前设备；它不会把 GPU 0 的任务搬到 GPU 1。已提交工作是否并行以及如何推进，受 stream 依赖、NCCL 调度、硬件与版本影响，不能简单承诺“调用总是立即返回”或“所有 GPU 同时开始”。</p>
+<figure class="diagram"><svg viewBox="0 0 780 660" role="img" aria-label="逻辑关系图 3" xmlns="http://www.w3.org/2000/svg"><defs><marker id="arrow3" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0 0 L8 4 L0 8" fill="#6d9b84"/></marker></defs>
+<path d="M390.0,84 C390.0,120 390.0,105 390.0,141" fill="none" stroke="#6d9b84" stroke-width="2" marker-end="url(#arrow3)"/>
+<path d="M390.0,209 C390.0,245 260.0,230 260.0,266" fill="none" stroke="#6d9b84" stroke-width="2" marker-end="url(#arrow3)"/>
+<path d="M390.0,209 C390.0,245 520.0,230 520.0,266" fill="none" stroke="#6d9b84" stroke-width="2" marker-end="url(#arrow3)"/>
+<path d="M260.0,334 C260.0,370 260.0,355 260.0,391" fill="none" stroke="#6d9b84" stroke-width="2" marker-end="url(#arrow3)"/>
+<path d="M520.0,334 C520.0,370 520.0,355 520.0,391" fill="none" stroke="#6d9b84" stroke-width="2" marker-end="url(#arrow3)"/>
+<path d="M260.0,459 C260.0,495 390.0,480 390.0,516" fill="none" stroke="#6d9b84" stroke-width="2" marker-end="url(#arrow3)"/>
+<path d="M520.0,459 C520.0,495 390.0,480 390.0,516" fill="none" stroke="#6d9b84" stroke-width="2" marker-end="url(#arrow3)"/>
+<rect x="278.0" y="16" width="224" height="68" rx="9" fill="#edf7f1" stroke="#9fc8af"/>
+<text x="390.0" y="55.0" text-anchor="middle" font-size="13" fill="#234e39">一个 MPI 进程 W0</text>
+<rect x="278.0" y="141" width="224" height="68" rx="9" fill="#edf7f1" stroke="#9fc8af"/>
+<text x="390.0" y="180.0" text-anchor="middle" font-size="13" fill="#234e39">一个测试线程 T0</text>
+<rect x="148.0" y="266" width="224" height="68" rx="9" fill="#edf7f1" stroke="#9fc8af"/>
+<text x="260.0" y="295.5" text-anchor="middle" font-size="13" fill="#234e39">选择 D0 / 使用 comm0 与</text>
+<text x="260.0" y="314.5" text-anchor="middle" font-size="13" fill="#234e39">stream0</text>
+<rect x="408.0" y="266" width="224" height="68" rx="9" fill="#edf7f1" stroke="#9fc8af"/>
+<text x="520.0" y="295.5" text-anchor="middle" font-size="13" fill="#234e39">选择 D1 / 使用 comm1 与</text>
+<text x="520.0" y="314.5" text-anchor="middle" font-size="13" fill="#234e39">stream1</text>
+<rect x="148.0" y="391" width="224" height="68" rx="9" fill="#edf7f1" stroke="#9fc8af"/>
+<text x="260.0" y="430.0" text-anchor="middle" font-size="13" fill="#234e39">CUDA D0 / NCCL C0</text>
+<rect x="408.0" y="391" width="224" height="68" rx="9" fill="#edf7f1" stroke="#9fc8af"/>
+<text x="520.0" y="430.0" text-anchor="middle" font-size="13" fill="#234e39">CUDA D1 / NCCL C1</text>
+<rect x="278.0" y="516" width="224" height="68" rx="9" fill="#edf7f1" stroke="#9fc8af"/>
+<text x="390.0" y="555.0" text-anchor="middle" font-size="13" fill="#234e39">同一个集合操作的不同参与者</text>
+</svg><figcaption>箭头表示结构或数据处理关系；不代表实测网络物理链路。</figcaption></figure>
+<p>图表示控制和参与关系，不表示两个设备的实际执行时序，也不表示物理链路。</p>
+<h3>NCCL Group API 的作用</h3>
+<p>当同一线程驱动多个本地 GPU 参与同一个集合操作时，需要按官方 Group API 用法组织这些调用。某些调用可能等待其他参与者；若简单顺序发起并在第一个调用上等待，后续本地参与者可能得不到提交机会。Group API 将调用成组处理，避免这种单线程多设备调用模式的问题。</p>
+<p>注意：<code>ncclGroupStart/End</code> 的“Group”是 API 调用分组，<strong>不是</strong> <code>NCCL_TESTS_SPLIT</code> 的通信器成员分组，两者没有相同含义。</p>
+<p>下面是普通阻塞通信器配置下的概念代码，不是可独立编译的完整程序；省略初始化、分配、错误处理与释放：</p>
+<pre><code class="language-cpp">// 每个设备的 comm、stream 和缓冲区已在正确设备上创建。
+ncclGroupStart();
+for (int device = 0; device &lt; ngpus; ++device) {
+    cudaSetDevice(device);
+    ncclAllReduce(sendbuf[device], recvbuf[device], count,
+                  ncclFloat, ncclSum, comm[device], stream[device]);
+}
+ncclGroupEnd();
+
+// GroupEnd 不等于 GPU 工作全部完成。
+// 需要读取结果或确认完成时，对相应设备上的 stream 同步。
+for (int device = 0; device &lt; ngpus; ++device) {
+    cudaSetDevice(device);
+    cudaStreamSynchronize(stream[device]);
+}
+</code></pre>
+<p>非阻塞通信器还需要按相应 API 检查异步状态，不能直接套用上述简化流程。也不要在尚未完成的 group 内随意同步 stream，避免等待尚未提交的工作。</p>
+<p>本地 <code>common.cu</code> 的测试调用路径在 <code>args-&gt;nGpus &gt; 1</code> 时使用 <code>ncclGroupStart/End</code>。因此 <code>-t 1 -g 4</code> 的含义是一个测试线程管理四个 GPU 参与者，并不意味着自动变成四个用户测试线程。NCCL 自身可能另有内部辅助线程，不能和 <code>-t</code> 混淆。</p>
+<h3>三种配置的对照</h3>
+<p>下表假设无 split、设备分配不重复且只有一个节点：</p>
+<div class="table-scroll"><table>
+<thead>
+<tr>
+<th style="text-align:right">MPI 进程数</th>
+<th style="text-align:right">-t</th>
+<th style="text-align:right">-g</th>
+<th style="text-align:right">用户测试线程总数</th>
+<th style="text-align:right">NCCL 参与者总数</th>
+<th>说明</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td style="text-align:right">4</td>
+<td style="text-align:right">1</td>
+<td style="text-align:right">1</td>
+<td style="text-align:right">4</td>
+<td style="text-align:right">4</td>
+<td>每进程一 GPU；常用于对齐一进程一 GPU 的训练部署</td>
+</tr>
+<tr>
+<td style="text-align:right">1</td>
+<td style="text-align:right">1</td>
+<td style="text-align:right">4</td>
+<td style="text-align:right">1</td>
+<td style="text-align:right">4</td>
+<td>一个线程驱动四个设备，使用多设备 group 调用</td>
+</tr>
+<tr>
+<td style="text-align:right">1</td>
+<td style="text-align:right">2</td>
+<td style="text-align:right">2</td>
+<td style="text-align:right">2</td>
+<td style="text-align:right">4</td>
+<td>两个测试线程，各管理两个设备</td>
+</tr>
+</tbody>
+</table></div>
+<p>三者的参与者数量相同，但 CPU 调度、调用组织和进程布局不同。基准测试应匹配目标应用，不能因为单进程多 GPU 模式存在就把它视为“不受支持”或一概不适合生产。</p>
+<h2 id="section-7">7. 对分享分析中容易误解的表述作校正</h2>
+<div class="table-scroll"><table>
+<thead>
+<tr>
+<th>分享中的简化表述</th>
+<th>本文采用的准确解释</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>只要 -g 1，MPI rank 就等于 NCCL rank</td>
+<td>还需 -t 1、无 split 重编号等前提；仅 -g 1 不足以保证</td>
+</tr>
+<tr>
+<td>local rank 就是本机 GPU 编号</td>
+<td>本项目中 L 是同节点进程编号；默认设备起点为 L×t×g；设备覆盖及可见性还会改变对应关系</td>
+</tr>
+<tr>
+<td>MPI 只能通信 CPU 内存</td>
+<td>MPI rank 是进程身份；CUDA-aware MPI 可支持设备缓冲区，不能按内存位置给 MPI rank 下定义</td>
+</tr>
+<tr>
+<td>NCCL 调用总会立即返回</td>
+<td>API 的主机侧返回、入队和设备完成要分别理解；行为受调用模式、group 和通信器配置影响</td>
+</tr>
+<tr>
+<td>集合通信要求所有 GPU 同时发起</td>
+<td>要求参与者按一致、合法的调用顺序参与；不是要求相同墙钟时刻调用</td>
+</tr>
+<tr>
+<td>GroupEnd 表示所有 GPU 已执行完成</td>
+<td>不等于设备完成；应依据 stream 同步及通信器异步状态判断</td>
+</tr>
+<tr>
+<td>-g 4 会自动创建四个测试线程</td>
+<td>-t 控制测试线程数；-g 控制每线程 GPU 数</td>
+</tr>
+<tr>
+<td>多线程操作同一 GPU 都由驱动自动串行保证安全</td>
+<td>stream/资源访问及 NCCL 对象使用仍需正确同步；不能以驱动为由忽略线程安全</td>
+</tr>
+<tr>
+<td>global rank 总是 NCCL rank</td>
+<td>必须查看日志字段及通信器上下文；可能指 MPI world rank 或其他系统的全局进程编号</td>
+</tr>
+<tr>
+<td>#wrong、i_max 可以直接定位某个掉队 rank</td>
+<td>错误数与最大耗时指标不自动携带明确的责任 rank；要检查原始字段及归并口径，不能编造 rank 归因</td>
+</tr>
+<tr>
+<td>不同通信域互相不可见</td>
+<td>各通信器的参与集合与编号独立；应用可以让同一设备/进程参与多个通信器，并协调这些操作</td>
+</tr>
+</tbody>
+</table></div>
+<h2 id="section-8">8. 通信分组：逻辑隔离会改变实际测试行为</h2>
+<p><code>NCCL_TESTS_SPLIT</code> 是通信参与范围的逻辑划分，不是页面标签。nccl-tests 根据 MPI world rank 计算 color，将进程加入不同 MPI 子通信器，再为各组建立独立的 NCCL 通信器。因此它真实改变“谁与谁共同执行一次集合操作”。</p>
+<h3>单组与两组的数值示例</h3>
+<p>假设 W0～W3 每个进程各管理一张 GPU，分别持有标量 1、2、3、4，执行 SUM AllReduce：</p>
+<div class="table-scroll"><table>
+<thead>
+<tr>
+<th>参与者</th>
+<th style="text-align:right">输入</th>
+<th style="text-align:right">单个通信组的结果</th>
+<th style="text-align:right">MOD 2 分组后的结果</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>W0 的 GPU</td>
+<td style="text-align:right">1</td>
+<td style="text-align:right">10</td>
+<td style="text-align:right">4</td>
+</tr>
+<tr>
+<td>W1 的 GPU</td>
+<td style="text-align:right">2</td>
+<td style="text-align:right">10</td>
+<td style="text-align:right">6</td>
+</tr>
+<tr>
+<td>W2 的 GPU</td>
+<td style="text-align:right">3</td>
+<td style="text-align:right">10</td>
+<td style="text-align:right">4</td>
+</tr>
+<tr>
+<td>W3 的 GPU</td>
+<td style="text-align:right">4</td>
+<td style="text-align:right">10</td>
+<td style="text-align:right">6</td>
+</tr>
+</tbody>
+</table></div>
+<p>不分组时所有参与者得到 1+2+3+4=10；分组后，G0={W0,W2} 得到 1+3=4，G1={W1,W3} 得到 2+4=6。这是解释通信范围的手算示例，不是一次实测输出。</p>
+<figure class="diagram"><svg viewBox="0 0 780 535" role="img" aria-label="逻辑关系图 4" xmlns="http://www.w3.org/2000/svg"><defs><marker id="arrow4" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0 0 L8 4 L0 8" fill="#6d9b84"/></marker></defs>
+<path d="M390.0,84 C390.0,120 260.0,105 260.0,141" fill="none" stroke="#6d9b84" stroke-width="2" marker-end="url(#arrow4)"/>
+<path d="M390.0,84 C390.0,120 520.0,105 520.0,141" fill="none" stroke="#6d9b84" stroke-width="2" marker-end="url(#arrow4)"/>
+<path d="M260.0,209 C260.0,245 195.0,230 195.0,266" fill="none" stroke="#6d9b84" stroke-width="2" marker-end="url(#arrow4)"/>
+<path d="M195.0,334 C195.0,370 195.0,355 195.0,391" fill="none" stroke="#6d9b84" stroke-width="2" marker-end="url(#arrow4)"/>
+<path d="M520.0,209 C520.0,245 390.0,230 390.0,266" fill="none" stroke="#6d9b84" stroke-width="2" marker-end="url(#arrow4)"/>
+<path d="M520.0,209 C520.0,245 585.0,230 585.0,266" fill="none" stroke="#6d9b84" stroke-width="2" marker-end="url(#arrow4)"/>
+<path d="M390.0,334 C390.0,370 390.0,355 390.0,391" fill="none" stroke="#6d9b84" stroke-width="2" marker-end="url(#arrow4)"/>
+<path d="M585.0,334 C585.0,370 585.0,355 585.0,391" fill="none" stroke="#6d9b84" stroke-width="2" marker-end="url(#arrow4)"/>
+<rect x="278.0" y="16" width="224" height="68" rx="9" fill="#edf7f1" stroke="#9fc8af"/>
+<text x="390.0" y="45.5" text-anchor="middle" font-size="13" fill="#234e39">4 个 MPI 进程 / 每进程 1</text>
+<text x="390.0" y="64.5" text-anchor="middle" font-size="13" fill="#234e39">GPU</text>
+<rect x="148.0" y="141" width="224" height="68" rx="9" fill="#edf7f1" stroke="#9fc8af"/>
+<text x="260.0" y="180.0" text-anchor="middle" font-size="13" fill="#234e39">不分组</text>
+<rect x="408.0" y="141" width="224" height="68" rx="9" fill="#edf7f1" stroke="#9fc8af"/>
+<text x="520.0" y="180.0" text-anchor="middle" font-size="13" fill="#234e39">MOD 2 分组</text>
+<rect x="83.0" y="266" width="224" height="68" rx="9" fill="#edf7f1" stroke="#9fc8af"/>
+<text x="195.0" y="305.0" text-anchor="middle" font-size="13" fill="#234e39">一组：W0、W1、W2、W3</text>
+<rect x="83.0" y="391" width="224" height="68" rx="9" fill="#edf7f1" stroke="#9fc8af"/>
+<text x="195.0" y="430.0" text-anchor="middle" font-size="13" fill="#234e39">一次 4-rank AllReduce</text>
+<rect x="278.0" y="266" width="224" height="68" rx="9" fill="#edf7f1" stroke="#9fc8af"/>
+<text x="390.0" y="305.0" text-anchor="middle" font-size="13" fill="#234e39">G0：W0、W2</text>
+<rect x="473.0" y="266" width="224" height="68" rx="9" fill="#edf7f1" stroke="#9fc8af"/>
+<text x="585.0" y="305.0" text-anchor="middle" font-size="13" fill="#234e39">G1：W1、W3</text>
+<rect x="278.0" y="391" width="224" height="68" rx="9" fill="#edf7f1" stroke="#9fc8af"/>
+<text x="390.0" y="420.5" text-anchor="middle" font-size="13" fill="#234e39">独立 2-rank AllReduce /</text>
+<text x="390.0" y="439.5" text-anchor="middle" font-size="13" fill="#234e39">结果 4</text>
+<rect x="473.0" y="391" width="224" height="68" rx="9" fill="#edf7f1" stroke="#9fc8af"/>
+<text x="585.0" y="420.5" text-anchor="middle" font-size="13" fill="#234e39">独立 2-rank AllReduce /</text>
+<text x="585.0" y="439.5" text-anchor="middle" font-size="13" fill="#234e39">结果 6</text>
+</svg><figcaption>箭头表示结构或数据处理关系；不代表实测网络物理链路。</figcaption></figure>
+<p>这里“独立”指参与集合和结果独立，不表示执行时间一致或硬件带宽互不影响。</p>
+<h3>分组的测试目的</h3>
+<p>假设 2 台节点各 4 GPU，每 GPU 一个 MPI 进程，且已确认以下放置：</p>
+<pre><code class="language-text">节点 A：W0 W1 W2 W3
+节点 B：W4 W5 W6 W7
+</code></pre>
+<div class="table-scroll"><table>
+<thead>
+<tr>
+<th>分组配置</th>
+<th>实际成员</th>
+<th>适合观察的范围</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>单个通信组</td>
+<td>{W0,W1,W2,W3,W4,W5,W6,W7}</td>
+<td>8 GPU 整体跨节点集合通信</td>
+</tr>
+<tr>
+<td>DIV 4</td>
+<td>G0={W0,W1,W2,W3}；G1={W4,W5,W6,W7}</td>
+<td>各节点内部的 4 GPU 通信，并行运行两组</td>
+</tr>
+<tr>
+<td>MOD 4</td>
+<td>G0={W0,W4}；G1={W1,W5}；G2={W2,W6}；G3={W3,W7}</td>
+<td>每组跨两节点，四组同时产生网络负载</td>
+</tr>
+</tbody>
+</table></div>
+<p>这些配置可用于比较不同规模和通信范围，也可作为多组并行通信的简化负载。不能直接把它等同于完整训练任务的数据并行/张量并行调度：真实训练还有计算、依赖、通信器布局等因素。</p>
+<h3>四个重要边界</h3>
+<ol>
+<li><strong>分组按 W，不按节点名。</strong> DIV 4 不会自动识别“每节点 4 GPU”；进程放置变化后可能不再得到节点内分组。</li>
+<li><strong>分组以 MPI 进程为单位。</strong> 一个进程里的所有测试线程及其 GPU 会一起进入同一组。只有一个 MPI 进程时，不能用此参数把它管理的 8 张 GPU 分为两组。</li>
+<li><strong>分组不重新分配设备。</strong> 默认 D 由本地进程编号 L 和 t×g 决定，不因为组内 rank 重新编号就改用 D0。</li>
+<li><strong>分组不隔离物理资源。</strong> 不自动独占 NIC、链路、GPU 或端口，不自动绑定 Ring/Tree 路径；不同组仍可能争用同一资源。</li>
+</ol>
+<h3>两种“Group”不要混淆</h3>
+<div class="table-scroll"><table>
+<thead>
+<tr>
+<th>名称</th>
+<th>分什么</th>
+<th>作用</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>NCCL_TESTS_SPLIT</code></td>
+<td>通信参与者</td>
+<td>改变通信器成员，形成独立的集合操作</td>
+</tr>
+<tr>
+<td><code>ncclGroupStart/End</code></td>
+<td>一批 API 调用</td>
+<td>协调/聚合提交，支持同线程管理多个设备；不负责拆分通信器</td>
+</tr>
+</tbody>
+</table></div>
+<p>页面建议说明：<strong>“决定哪些参与者共同执行一次集合操作。默认所有参与者属于同一组；分组后，各组并行执行独立测试，不代表物理资源隔离。”</strong></p>
+<p>测试所有选定 GPU 的整体 AllReduce 性能时选“单个通信组”；需要比较节点内、跨节点或多组并发负载时再配置 split，并检查实际成员和设备映射。</p>
+<h3>源码依据与验证范围</h3>
+<p>本节依据项目内 <a href="../nccl-tests-master/src/common.cu">common.cu</a> 的 color 计算、<code>MPI_Comm_split</code>、组内进程编号和设备选择，以及 <a href="../nccl-tests-master/README.md">README</a> 的 Parallel Initialization / Parallel Tests 相关说明。编号表和数值结果为指定前提下的推算；尚未进行真实 GPU 验证。</p>
+<h2 id="section-9">9. 补充资料与核验范围</h2>
+<ul>
+<li>用户提供的豆包分享：<a href="https://www.doubao.com/thread/xpex4RWSTRnuKTWRx">https://www.doubao.com/thread/xpex4RWSTRnuKTWRx</a>，标题《一个线程管理多个GPU的原理与实现》，本轮于 2026-10-29 读取。该页面自带 AI 内容提示，作为讨论来源而非权威接口定义。</li>
+<li>NCCL Communicator 官方说明：<a href="https://docs.nvidia.com/deeplearning/nccl/user-guide/docs/usage/communicators.html">https://docs.nvidia.com/deeplearning/nccl/user-guide/docs/usage/communicators.html</a>。</li>
+<li>NCCL Group Calls 官方说明：<a href="https://docs.nvidia.com/deeplearning/nccl/user-guide/docs/usage/groups.html">https://docs.nvidia.com/deeplearning/nccl/user-guide/docs/usage/groups.html</a>。</li>
+<li>NCCL Thread Safety 官方说明：<a href="https://docs.nvidia.com/deeplearning/nccl/user-guide/docs/usage/threadsafety.html">https://docs.nvidia.com/deeplearning/nccl/user-guide/docs/usage/threadsafety.html</a>。</li>
+<li>本地 nccl-tests 代码：<a href="../nccl-tests-master/src/common.cu">common.cu</a>，核对多 GPU group 调用、线程数量与设备循环。</li>
+</ul>
+<p>本次补充完善逻辑解释，不构成新的真实 GPU 执行验证；关于追踪采集的完整结论见<a href="nccl-rank-topology-and-observability.html">综合文档</a>。</p>
+</main></body></html>
