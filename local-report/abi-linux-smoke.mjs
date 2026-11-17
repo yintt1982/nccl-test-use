@@ -12,9 +12,16 @@ const server = createServer(handler);
 await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
 async function run(command, args) {
   console.log('[ABI-CI] running ' + command + ' ' + args[0]);
-  const child = spawn(command, args, { stdio: 'inherit' });
+  const child = spawn(command, args, { stdio: ['ignore', 'pipe', 'pipe'] });
+  let output = '';
+  child.stdout.on('data', chunk => { output += chunk; process.stdout.write(chunk); });
+  child.stderr.on('data', chunk => { output += chunk; process.stderr.write(chunk); });
   const code = await new Promise(resolve => child.on('close', resolve));
-  if (code !== 0) throw Error(command + ' failed with exit code ' + code);
+  if (code !== 0) {
+    const summary = output.split(/\r?\n/).filter(line => /error:|fatal error:|failed/i.test(line)).slice(0, 3).join(' | ') || command + ' failed with exit code ' + code;
+    console.error('::error title=Linux ABI harness::' + summary.replaceAll('%', '%25').replaceAll('\r', '%0D').replaceAll('\n', '%0A'));
+    throw Error(command + ' failed with exit code ' + code);
+  }
 }
 try {
   const plugin = join(temp, 'profiler-plugin.so');
